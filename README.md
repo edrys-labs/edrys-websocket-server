@@ -1,31 +1,39 @@
+# edrys-websocket-server
 
-# y-websocket-server :tophat:
-> Simple backend for [y-websocket](https://github.com/yjs/y-websocket)
+> WebSocket server for [edrys-Lite](https://github.com/edrys-labs/edrys-Lite) to create a connection between peers and share video streams.
 
-The Websocket Provider is a solid choice if you want a central source that
-handles authentication and authorization. Websockets also send header
-information and cookies, so you can use existing authentication mechanisms with
-this server.
+> This project is a modified version of [y-websocket-server](https://github.com/yjs/y-websocket-server) by Kevin Jahns.
+
+The WebSocket server provides two main functions:
+1. A backend for [y-websocket](https://github.com/yjs/y-websocket) to handle Yjs document collaboration
+2. A video streaming server to enable real-time video sharing between peers
 
 ## Quick Start
 
 ### Install dependencies
 
-```sh
-npm i @y/websocket-server
+```
+npm install
 ```
 
-### Start a y-websocket server
+### Start the unified WebSocket server
 
-This repository implements a basic server that you can adopt to your specific use-case. [(source code)](./src/)
+This repository implements a server that handles both Yjs document collaboration and video streaming in a single process. [(source code)](./src/)
 
-Start a y-websocket server:
+Start the server:
 
-```sh
-HOST=localhost PORT=1234 npx y-websocket
+```
+node dist/server.cjs --port 3210
 ```
 
-### Client Code:
+The server exposes two WebSocket endpoints:
+
+* `ws://hostname:port/` - For Yjs document collaboration
+* `ws://hostname:port/stream` - For video streaming
+
+## Client Usage
+
+### For Yjs document collaboration:
 
 ```js
 import * as Y from 'yjs'
@@ -39,43 +47,101 @@ wsProvider.on('status', event => {
 })
 ```
 
-## Websocket Server
+### For video streaming:
 
-Start a y-websocket server:
+```js
+// Connect to the streaming endpoint
+const ws = new WebSocket('ws://localhost:1234/stream')
 
-```sh
-HOST=localhost PORT=1234 npx y-websocket
+// For stream source (sender)
+ws.onopen = () => {
+  // Register as a video source for a specific room
+  ws.send(JSON.stringify({
+    type: 'register-source',
+    roomId: 'my-room-id'
+  }))
+  
+  // Send video frames (example)
+  function sendFrame(frameData) {
+    ws.send(JSON.stringify({
+      type: 'frame',
+      data: frameData
+    }))
+  }
+}
+
+// For stream viewer (receiver)
+ws.onopen = () => {
+  // Join a specific room to receive video
+  ws.send(JSON.stringify({
+    type: 'join-room',
+    roomId: 'my-room-id'
+  }))
+}
+
+// Handle incoming messages
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data)
+  
+  if (data.type === 'source-available') {
+    console.log('A video source is available in this room')
+  } else if (data.type === 'frame') {
+    // Handle incoming video frame
+    displayFrame(data.data)
+  }
+}
 ```
 
-Since npm symlinks the `y-websocket` executable from your local `./node_modules/.bin` folder, you can simply run npx. The `PORT` environment variable already defaults to 1234, and `HOST` defaults to `localhost`.
+## Video Streaming Protocol
 
-### Websocket Server with Persistence
+The streaming WebSocket endpoint uses a simple JSON-based protocol:
 
-Persist document updates in a LevelDB database.
+### Message Types:
 
-See [LevelDB Persistence](https://github.com/yjs/y-leveldb) for more info.
+1. **Register as a stream source**
+   ```json
+   {
+     "type": "register-source",
+     "roomId": "unique-room-identifier"
+   }
+   ```
 
-```sh
-HOST=localhost PORT=1234 YPERSISTENCE=./dbDir npx y-websocket
-```
+2. **Join a room to receive video**
+   ```json
+   {
+     "type": "join-room",
+     "roomId": "unique-room-identifier"
+   }
+   ```
 
-### Websocket Server with HTTP callback
+3. **Send a video frame**
+   ```json
+   {
+     "type": "frame",
+     "data": "base64-encoded-frame-data"
+   }
+   ```
 
-Send a debounced callback to an HTTP server (`POST`) on document update. Note that this implementation doesn't implement a retry logic in case the `CALLBACK_URL` does not work.
+4. **Ping/pong for latency measurement**
+   ```json
+   {
+     "type": "ping",
+     "timestamp": 1620000000000
+   }
+   ```
 
-Can take the following ENV variables:
-
-* `CALLBACK_URL` : Callback server URL
-* `CALLBACK_DEBOUNCE_WAIT` : Debounce time between callbacks (in ms). Defaults to 2000 ms
-* `CALLBACK_DEBOUNCE_MAXWAIT` : Maximum time to wait before callback. Defaults to 10 seconds
-* `CALLBACK_TIMEOUT` : Timeout for the HTTP call. Defaults to 5 seconds
-* `CALLBACK_OBJECTS` : JSON of shared objects to get data (`'{"SHARED_OBJECT_NAME":"SHARED_OBJECT_TYPE}'`)
-
-```sh
-CALLBACK_URL=http://localhost:3000/ CALLBACK_OBJECTS='{"prosemirror":"XmlFragment"}' npm start
-```
-This sends a debounced callback to `localhost:3000` 2 seconds after receiving an update (default `DEBOUNCE_WAIT`) with the data of an XmlFragment named `"prosemirror"` in the body.
+5. **Client statistics**
+   ```json
+   {
+     "type": "stats",
+     "fps": 30,
+     "bufferSize": 2,
+     "dropped": 0
+   }
+   ```
 
 ## License
 
 [The MIT License](./LICENSE) © Kevin Jahns
+
+Fork maintained by: [edrys-labs](https://github.com/edrys-labs)

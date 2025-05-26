@@ -1,7 +1,7 @@
 {
-  "name": "@y/websocket-server",
-  "version": "0.1.1",
-  "description": "Backend for y-websocket",
+  "name": "edrys-websocket-server",
+  "version": "0.0.1",
+  "description": "Backend for y-websocket with integrated video streaming",
   "type": "module",
   "sideEffects": false,
   "funding": {
@@ -40,17 +40,21 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yjs/y-websocket-server.git"
+    "url": "git+https://github.com/edrys-labs/edrys-websocket-server.git"
   },
   "keywords": [
     "Yjs"
   ],
   "author": "Kevin Jahns <kevin.jahns@protonmail.com>",
   "license": "MIT",
+  "contributors": [
+    "Andre Dietrich <https://github.com/andre-dietrich>",
+    "Jihad Hyadi <https://github.com/jh-488>" 
+  ],
   "bugs": {
-    "url": "https://github.com/yjs/y-websocket-server/issues"
+    "url": "https://github.com/edrys-labs/edrys-websocket-server/issues"
   },
-  "homepage": "https://github.com/yjs/y-websocket-server#readme",
+  "homepage": "https://github.com/edrys-labs/edrys-websocket-server#readme",
   "standard": {
     "ignore": [
       "/dist",

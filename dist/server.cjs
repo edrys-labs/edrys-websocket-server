@@ -3,8 +3,13 @@
 
 var WebSocket = require('ws');
 var http = require('http');
+var https = require('https');
 var number = require('lib0/number');
 var utils = require('./utils.cjs');
+var fs = require('fs');
+var path = require('path');
+require('crypto');
+var child_process = require('child_process');
 var os = require('os');
 var url = require('url');
 require('yjs');
@@ -14,7 +19,6 @@ require('lib0/encoding');
 require('lib0/decoding');
 require('lib0/map');
 require('lib0/eventloop');
-require('y-leveldb');
 require('./callback.cjs');
 
 function _interopNamespaceDefault(e) {
@@ -405,6 +409,104 @@ const cleanup = () => {
   clearInterval(statsInterval);
 };
 
+// SSL/TLS utility functions for HTTPS/WSS support
+
+/**
+ * Generate a self-signed certificate for development/testing
+ * @param {string} certDir - Directory to store certificates
+ * @returns {Object} - Object containing key and cert paths
+ */
+function generateSelfSignedCert(certDir = './certs') {
+  // Ensure certificate directory exists
+  if (!fs.existsSync(certDir)) {
+    fs.mkdirSync(certDir, { recursive: true });
+  }
+
+  const keyPath = path.join(certDir, 'server-key.pem');
+  const certPath = path.join(certDir, 'server-cert.pem');
+
+  // Check if certificates already exist
+  if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+    console.log('🔒 Using existing self-signed certificates');
+    return { keyPath, certPath }
+  }
+
+  console.log('🔐 Generating self-signed SSL certificate...');
+
+  try {
+    // Try to use OpenSSL if available
+    createWithOpenSSL(keyPath, certPath);
+  } catch (error) {
+    //console.log('⚠️  OpenSSL not available, using Node.js crypto...')
+    //createWithNodeCrypto(keyPath, certPath)
+    console.log('❌ Cannot generate SSL certificates without OpenSSL');
+    console.log('');
+    console.log('🔧 Solutions:');
+    console.log('   1. Install OpenSSL:');
+    console.log('      • Linux: sudo apt-get install openssl');
+    console.log('      • macOS: brew install openssl');
+    console.log('      • Windows: Download from https://slproweb.com/products/Win32OpenSSL.html');
+    console.log('');
+    console.log('   2. Provide your own certificates in certs/ directory:');
+    console.log('      • server-key.pem (private key)');
+    console.log('      • server-cert.pem (certificate)');
+    console.log('');
+    console.log('   3. Run without --ssl flag to use HTTP instead:');
+    console.log('      • Example: ./edrys-server --port 3210');
+    console.log('');
+    
+    throw new Error('SSL certificate generation requires OpenSSL. Please install OpenSSL or provide existing certificates.')
+  }
+
+  console.log('✅ Self-signed certificate generated successfully');
+  console.log(`   Key: ${keyPath}`);
+  console.log(`   Cert: ${certPath}`);
+
+  return { keyPath, certPath }
+}
+
+/**
+ * Create certificates using OpenSSL
+ */
+function createWithOpenSSL(keyPath, certPath) {
+  // Create a more comprehensive certificate with SAN fields for better browser compatibility
+  const opensslCmd = `openssl req -nodes -new -x509 -keyout "${keyPath}" -out "${certPath}" -days 365 -subj "/C=US/ST=Local/L=Local/O=Edrys/OU=WebSocket/CN=localhost" -addext "subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1,IP:0.0.0.0"`;
+  child_process.execSync(opensslCmd, { stdio: 'pipe' });
+}
+
+/**
+ * Load SSL certificates from files
+ * @param {string} keyPath - Path to private key file
+ * @param {string} certPath - Path to certificate file
+ * @returns {Object} - Object containing key and cert content
+ */
+function loadSSLCertificates(keyPath, certPath) {
+  try {
+    const key = fs.readFileSync(keyPath, 'utf8');
+    const cert = fs.readFileSync(certPath, 'utf8');
+    return { key, cert }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    throw new Error(`Failed to load SSL certificates: ${errorMessage}`)
+  }
+}
+
+/**
+ * Check if SSL certificates exist and are valid
+ * @param {string} keyPath - Path to private key file
+ * @param {string} certPath - Path to certificate file
+ * @returns {boolean} - True if certificates exist and are readable
+ */
+function validateSSLCertificates(keyPath, certPath) {
+  try {
+    fs.accessSync(keyPath, fs.constants.R_OK);
+    fs.accessSync(certPath, fs.constants.R_OK);
+    return true
+  } catch {
+    return false
+  }
+}
+
 // ANSI color codes for terminal output
 const colors = {
   reset: '\x1b[0m',
@@ -442,13 +544,28 @@ function showHelp() {
   console.log(
     '  --host, --host=STRING       Host to bind to (default: 0.0.0.0 or $HOST env)'
   );
+  console.log(
+    '  --ssl, --https              Enable HTTPS/WSS with self-signed certificate'
+  );
+  console.log(
+    '  --ssl-key=PATH              Path to SSL private key file'
+  );
+  console.log(
+    '  --ssl-cert=PATH             Path to SSL certificate file'
+  );
   console.log('  --help, -h                  Show this help message');
   console.log('\nEnvironment Variables:');
   console.log('  PORT                        Alternative to --port');
   console.log('  HOST                        Alternative to --host');
+  console.log('  SSL_KEY                     Path to SSL private key');
+  console.log('  SSL_CERT                    Path to SSL certificate');
   console.log(
     '  NODE_ENV                    Environment (development/production)'
   );
+  console.log('\nSSL/TLS Support:');
+  console.log('  Use --ssl to enable HTTPS/WSS with auto-generated self-signed certificates');
+  console.log('  Or provide custom certificates with --ssl-key and --ssl-cert');
+  console.log('  Self-signed certificates will be saved in ./certs/ directory');
 }
 
 // Parse command line arguments
@@ -456,6 +573,11 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const result = {
     help: false,
+    ssl: false,
+    sslKey: '',
+    sslCert: '',
+    port: '',
+    host: '',
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -469,9 +591,28 @@ function parseArgs() {
       result.port = arg.substring('--port='.length);
     } else if (arg.startsWith('--host=')) {
       result.host = arg.substring('--host='.length);
+    } else if (arg === '--ssl' || arg === '--https') {
+      result.ssl = true;
+    } else if (arg.startsWith('--ssl-key=')) {
+      result.sslKey = arg.substring('--ssl-key='.length);
+    } else if (arg.startsWith('--ssl-cert=')) {
+      result.sslCert = arg.substring('--ssl-cert='.length);
     } else if (arg === '--help' || arg === '-h') {
       result.help = true;
     }
+  }
+
+  // Check environment variables for SSL certificates
+  if (!result.sslKey && process.env.SSL_KEY) {
+    result.sslKey = process.env.SSL_KEY;
+  }
+  if (!result.sslCert && process.env.SSL_CERT) {
+    result.sslCert = process.env.SSL_CERT;
+  }
+
+  // If SSL key and cert are provided, enable SSL
+  if (result.sslKey && result.sslCert) {
+    result.ssl = true;
   }
 
   return result
@@ -520,8 +661,34 @@ const streamWss = new WebSocket.Server({
 const host = args.host || process.env.HOST || '0.0.0.0';
 const port = number__namespace.parseInt(String(args.port || process.env.PORT || '1234'));
 
-// Add CORS headers for browser support
-const server = http.createServer((request, response) => {
+// SSL Configuration
+let sslOptions = null;
+if (args.ssl) {
+  try {
+    if (args.sslKey && args.sslCert) {
+      // Use provided certificates
+      console.log('🔐 Loading custom SSL certificates...');
+      if (!validateSSLCertificates(args.sslKey, args.sslCert)) {
+        throw new Error(`SSL certificate files not found: ${args.sslKey}, ${args.sslCert}`)
+      }
+      const { key, cert } = loadSSLCertificates(args.sslKey, args.sslCert);
+      sslOptions = { key, cert };
+    } else {
+      // Generate self-signed certificates
+      console.log('🔐 Generating self-signed SSL certificates...');
+      const { keyPath, certPath } = generateSelfSignedCert();
+      const { key, cert } = loadSSLCertificates(keyPath, certPath);
+      sslOptions = { key, cert };
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown SSL error';
+    console.error(`${error('SSL Setup Error:')} ${errorMessage}`);
+    process.exit(1);
+  }
+}
+
+// Create HTTP server with CORS headers
+const requestHandler = (request, response) => {
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -534,7 +701,12 @@ const server = http.createServer((request, response) => {
 
   response.writeHead(200, { 'Content-Type': 'text/plain' });
   response.end('okay');
-});
+};
+
+// Create server (HTTP or HTTPS based on SSL configuration)
+const server = sslOptions 
+  ? https.createServer(sslOptions, requestHandler)
+  : http.createServer(requestHandler);
 
 // Set up the connections
 yDocWss.on('connection', utils.setupWSConnection);
@@ -563,8 +735,12 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 server.listen(port, host, () => {
+  const protocol = sslOptions ? 'https' : 'http';
+  const wsProtocol = sslOptions ? 'wss' : 'ws';
+  
   console.log(`\n${header('=== Unified WebSocket Server ===')}`);
-  console.log(`${info('Server running at:')} ${success(`${host}:${port}`)}`);
+  console.log(`${info('Server running at:')} ${success(`${protocol}://${host}:${port}`)}`);
+  console.log(`${info('SSL/TLS:')} ${sslOptions ? success('Enabled ✅') : warning('Disabled')}`);
   console.log(
     `${info('Environment:')} ${success(process.env.NODE_ENV || 'development')}`
   );
@@ -582,26 +758,38 @@ server.listen(port, host, () => {
       );
       console.log(`  ${header('IP Address:')} ${success(info.address)}`);
       console.log(
-        `  ${header('Yjs WebSocket URL:')} ${url_text(`ws://${info.address}:${port}`)}`
+        `  ${header('HTTP Server:')} ${url_text(`${protocol}://${info.address}:${port}`)}`
+      );
+      console.log(
+        `  ${header('Yjs WebSocket URL:')} ${url_text(`${wsProtocol}://${info.address}:${port}`)}`
       );
       console.log(
         `  ${header('Stream WebSocket URL:')} ${url_text(
-          `ws://${info.address}:${port}/stream`
+          `${wsProtocol}://${info.address}:${port}/stream`
         )}`
       );
     });
   }
 
   console.log(
-    `\n${header('To access Yjs from this machine:')} ${highlight(
-      ` ws://localhost:${port} `
-    )}`
+    `\n${header('To access from this machine:')}`
   );
   console.log(
-    `${header('To access Streaming from this machine:')} ${highlight(
-      ` ws://localhost:${port}/stream `
-    )}`
+    `  ${header('HTTP:')} ${highlight(` ${protocol}://localhost:${port} `)}`
   );
+  console.log(
+    `  ${header('Yjs WebSocket:')} ${highlight(` ${wsProtocol}://localhost:${port} `)}`
+  );
+  console.log(
+    `  ${header('Stream WebSocket:')} ${highlight(` ${wsProtocol}://localhost:${port}/stream `)}`
+  );
+
+  if (sslOptions) {
+    console.log(`\n${warning('⚠️  Using self-signed certificates:')}`);
+    console.log(`${warning('   Browsers will show security warnings')}`);
+    console.log(`${warning('   Click "Advanced" → "Proceed to localhost" to accept')}`);
+  }
+  
   console.log(`${header('==============================')}\n`);
 });
 

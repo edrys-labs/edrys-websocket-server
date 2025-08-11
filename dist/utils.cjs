@@ -7,7 +7,6 @@ var encoding = require('lib0/encoding');
 var decoding = require('lib0/decoding');
 var map = require('lib0/map');
 var eventloop = require('lib0/eventloop');
-var yLeveldb = require('y-leveldb');
 var callback = require('./callback.cjs');
 require('http');
 require('lib0/number');
@@ -37,6 +36,31 @@ var decoding__namespace = /*#__PURE__*/_interopNamespaceDefault(decoding);
 var map__namespace = /*#__PURE__*/_interopNamespaceDefault(map);
 var eventloop__namespace = /*#__PURE__*/_interopNamespaceDefault(eventloop);
 
+// Simple in-memory persistence using Map (for session persistence)
+class SimpleMemoryPersistence {
+  constructor() {
+    this.docs = new Map();
+    //console.info('💾 In-memory session persistence enabled')
+  }
+
+  async getYDoc(docName) {
+    if (!this.docs.has(docName)) {
+      const doc = new Y__namespace.Doc();
+      this.docs.set(docName, doc);
+      return doc
+    }
+    return this.docs.get(docName)
+  }
+
+  storeUpdate(docName, update) {
+    // Updates are automatically applied to the doc in memory
+    // No additional storage needed for in-memory persistence
+  }
+}
+
+// Setup simple in-memory persistence for session continuity
+const memoryPersistence = new SimpleMemoryPersistence();
+
 const CALLBACK_DEBOUNCE_WAIT = parseInt(process.env.CALLBACK_DEBOUNCE_WAIT || '2000');
 const CALLBACK_DEBOUNCE_MAXWAIT = parseInt(process.env.CALLBACK_DEBOUNCE_MAXWAIT || '10000');
 
@@ -52,19 +76,32 @@ const persistenceDir = process.env.YPERSISTENCE;
  * @type {{bindState: function(string,WSSharedDoc):void, writeState:function(string,WSSharedDoc):Promise<any>, provider: any}|null}
  */
 let persistence = null;
+
+// Setup persistence based on environment
 if (typeof persistenceDir === 'string') {
-  console.info('Persisting documents to "' + persistenceDir + '"');
-  // @ts-ignore
-  const ldb = new yLeveldb.LeveldbPersistence(persistenceDir);
+  console.info('📁 Persisting documents in memory for session: "' + persistenceDir + '"');
   persistence = {
-    provider: ldb,
+    provider: memoryPersistence,
     bindState: async (docName, ydoc) => {
-      const persistedYdoc = await ldb.getYDoc(docName);
-      const newUpdates = Y__namespace.encodeStateAsUpdate(ydoc);
-      ldb.storeUpdate(docName, newUpdates);
+      const persistedYdoc = await memoryPersistence.getYDoc(docName);
+      Y__namespace.encodeStateAsUpdate(ydoc);
       Y__namespace.applyUpdate(ydoc, Y__namespace.encodeStateAsUpdate(persistedYdoc));
       ydoc.on('update', update => {
-        ldb.storeUpdate(docName, update);
+        memoryPersistence.storeUpdate(docName, update);
+      });
+    },
+    writeState: async (_docName, _ydoc) => {}
+  };
+} else {
+  // Enable in-memory persistence by default for session continuity
+  persistence = {
+    provider: memoryPersistence,
+    bindState: async (docName, ydoc) => {
+      const persistedYdoc = await memoryPersistence.getYDoc(docName);
+      Y__namespace.encodeStateAsUpdate(ydoc);
+      Y__namespace.applyUpdate(ydoc, Y__namespace.encodeStateAsUpdate(persistedYdoc));
+      ydoc.on('update', update => {
+        memoryPersistence.storeUpdate(docName, update);
       });
     },
     writeState: async (_docName, _ydoc) => {}

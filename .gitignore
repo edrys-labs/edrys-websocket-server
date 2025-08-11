@@ -4,3 +4,7 @@ dbDir
 
 package-lock.json
 .vscode
+
+certs/
+edrys-executable
+edrys-executable-*

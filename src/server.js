@@ -2,10 +2,12 @@
 
 import WebSocket from 'ws'
 import http from 'http'
+import https from 'https'
 import * as number from 'lib0/number'
 import { setupWSConnection } from './utils.js'
 import { setupStreamConnection, setupStreamHeartbeat, cleanup } from './stream-utils.js'
-import os from 'os' // Add this import for network info
+import { generateSelfSignedCert, loadSSLCertificates, validateSSLCertificates } from './ssl-utils.js'
+import os from 'os'
 import url from 'url'
 
 // ANSI color codes for terminal output
@@ -61,13 +63,28 @@ function showHelp() {
   console.log(
     '  --host, --host=STRING       Host to bind to (default: 0.0.0.0 or $HOST env)'
   )
+  console.log(
+    '  --ssl, --https              Enable HTTPS/WSS with self-signed certificate'
+  )
+  console.log(
+    '  --ssl-key=PATH              Path to SSL private key file'
+  )
+  console.log(
+    '  --ssl-cert=PATH             Path to SSL certificate file'
+  )
   console.log('  --help, -h                  Show this help message')
   console.log('\nEnvironment Variables:')
   console.log('  PORT                        Alternative to --port')
   console.log('  HOST                        Alternative to --host')
+  console.log('  SSL_KEY                     Path to SSL private key')
+  console.log('  SSL_CERT                    Path to SSL certificate')
   console.log(
     '  NODE_ENV                    Environment (development/production)'
   )
+  console.log('\nSSL/TLS Support:')
+  console.log('  Use --ssl to enable HTTPS/WSS with auto-generated self-signed certificates')
+  console.log('  Or provide custom certificates with --ssl-key and --ssl-cert')
+  console.log('  Self-signed certificates will be saved in ./certs/ directory')
 }
 
 // Parse command line arguments
@@ -75,6 +92,11 @@ function parseArgs() {
   const args = process.argv.slice(2)
   const result = {
     help: false,
+    ssl: false,
+    sslKey: '',
+    sslCert: '',
+    port: '',
+    host: '',
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -88,9 +110,28 @@ function parseArgs() {
       result.port = arg.substring('--port='.length)
     } else if (arg.startsWith('--host=')) {
       result.host = arg.substring('--host='.length)
+    } else if (arg === '--ssl' || arg === '--https') {
+      result.ssl = true
+    } else if (arg.startsWith('--ssl-key=')) {
+      result.sslKey = arg.substring('--ssl-key='.length)
+    } else if (arg.startsWith('--ssl-cert=')) {
+      result.sslCert = arg.substring('--ssl-cert='.length)
     } else if (arg === '--help' || arg === '-h') {
       result.help = true
     }
+  }
+
+  // Check environment variables for SSL certificates
+  if (!result.sslKey && process.env.SSL_KEY) {
+    result.sslKey = process.env.SSL_KEY
+  }
+  if (!result.sslCert && process.env.SSL_CERT) {
+    result.sslCert = process.env.SSL_CERT
+  }
+
+  // If SSL key and cert are provided, enable SSL
+  if (result.sslKey && result.sslCert) {
+    result.ssl = true
   }
 
   return result
@@ -139,8 +180,34 @@ const streamWss = new WebSocket.Server({
 const host = args.host || process.env.HOST || '0.0.0.0'
 const port = number.parseInt(String(args.port || process.env.PORT || '1234'))
 
-// Add CORS headers for browser support
-const server = http.createServer((request, response) => {
+// SSL Configuration
+let sslOptions = null
+if (args.ssl) {
+  try {
+    if (args.sslKey && args.sslCert) {
+      // Use provided certificates
+      console.log('🔐 Loading custom SSL certificates...')
+      if (!validateSSLCertificates(args.sslKey, args.sslCert)) {
+        throw new Error(`SSL certificate files not found: ${args.sslKey}, ${args.sslCert}`)
+      }
+      const { key, cert } = loadSSLCertificates(args.sslKey, args.sslCert)
+      sslOptions = { key, cert }
+    } else {
+      // Generate self-signed certificates
+      console.log('🔐 Generating self-signed SSL certificates...')
+      const { keyPath, certPath } = generateSelfSignedCert()
+      const { key, cert } = loadSSLCertificates(keyPath, certPath)
+      sslOptions = { key, cert }
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown SSL error'
+    console.error(`${error('SSL Setup Error:')} ${errorMessage}`)
+    process.exit(1)
+  }
+}
+
+// Create HTTP server with CORS headers
+const requestHandler = (request, response) => {
   response.setHeader('Access-Control-Allow-Origin', '*')
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
@@ -153,7 +220,12 @@ const server = http.createServer((request, response) => {
 
   response.writeHead(200, { 'Content-Type': 'text/plain' })
   response.end('okay')
-})
+}
+
+// Create server (HTTP or HTTPS based on SSL configuration)
+const server = sslOptions 
+  ? https.createServer(sslOptions, requestHandler)
+  : http.createServer(requestHandler)
 
 // Set up the connections
 yDocWss.on('connection', setupWSConnection)
@@ -182,8 +254,12 @@ server.on('upgrade', (request, socket, head) => {
 })
 
 server.listen(port, host, () => {
+  const protocol = sslOptions ? 'https' : 'http'
+  const wsProtocol = sslOptions ? 'wss' : 'ws'
+  
   console.log(`\n${header('=== Unified WebSocket Server ===')}`)
-  console.log(`${info('Server running at:')} ${success(`${host}:${port}`)}`)
+  console.log(`${info('Server running at:')} ${success(`${protocol}://${host}:${port}`)}`)
+  console.log(`${info('SSL/TLS:')} ${sslOptions ? success('Enabled ✅') : warning('Disabled')}`)
   console.log(
     `${info('Environment:')} ${success(process.env.NODE_ENV || 'development')}`
   )
@@ -201,26 +277,38 @@ server.listen(port, host, () => {
       )
       console.log(`  ${header('IP Address:')} ${success(info.address)}`)
       console.log(
-        `  ${header('Yjs WebSocket URL:')} ${url_text(`ws://${info.address}:${port}`)}`
+        `  ${header('HTTP Server:')} ${url_text(`${protocol}://${info.address}:${port}`)}`
+      )
+      console.log(
+        `  ${header('Yjs WebSocket URL:')} ${url_text(`${wsProtocol}://${info.address}:${port}`)}`
       )
       console.log(
         `  ${header('Stream WebSocket URL:')} ${url_text(
-          `ws://${info.address}:${port}/stream`
+          `${wsProtocol}://${info.address}:${port}/stream`
         )}`
       )
     })
   }
 
   console.log(
-    `\n${header('To access Yjs from this machine:')} ${highlight(
-      ` ws://localhost:${port} `
-    )}`
+    `\n${header('To access from this machine:')}`
   )
   console.log(
-    `${header('To access Streaming from this machine:')} ${highlight(
-      ` ws://localhost:${port}/stream `
-    )}`
+    `  ${header('HTTP:')} ${highlight(` ${protocol}://localhost:${port} `)}`
   )
+  console.log(
+    `  ${header('Yjs WebSocket:')} ${highlight(` ${wsProtocol}://localhost:${port} `)}`
+  )
+  console.log(
+    `  ${header('Stream WebSocket:')} ${highlight(` ${wsProtocol}://localhost:${port}/stream `)}`
+  )
+
+  if (sslOptions) {
+    console.log(`\n${warning('⚠️  Using self-signed certificates:')}`)
+    console.log(`${warning('   Browsers will show security warnings')}`)
+    console.log(`${warning('   Click "Advanced" → "Proceed to localhost" to accept')}`)
+  }
+  
   console.log(`${header('==============================')}\n`)
 })
 

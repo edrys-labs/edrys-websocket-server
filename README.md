@@ -212,23 +212,40 @@ Self-signed certificates will be saved in the `./certs/` directory and reused on
 
 ### Standalone Executable
 
-A standalone executable is available that includes all dependencies and doesn't require Node.js installation on the target machine:
+Pre-built standalone executables for Linux, macOS, and Windows are available on the [GitHub Releases](../../releases) page. They include all dependencies and do not require Node.js on the target machine.
+
+To build the executables yourself:
 
 ```bash
-# Build the standalone executable for the current platform
+# Build for the current platform only
 ./build-sea.sh
 
-or
+# Build for all platforms (Linux x64, macOS x64, Windows x64)
+./build-sea.sh --all
+```
 
-# Build for all platforms (Linux, macOS, Windows)
-./buid-sea.sh --all 
+This produces three distribution folders:
 
-# Run the standalone executable
-cd edrys-executable
-./edrys-server --ssl --port 1234
+| Folder | Platform | Executable |
+|--------|----------|------------|
+| `edrys-executable-linux-x64/` | Linux x64 | `edrys-server-linux-x64` |
+| `edrys-executable-darwin-x64/` | macOS x64 | `edrys-server-macos-x64` |
+| `edrys-executable-win-x64/` | Windows x64 | `edrys-server-win-x64.exe` |
+
+Each folder also contains a ready-to-use startup script (`start-server.sh` / `start-server.bat`).
+
+```bash
+# Run directly (Linux/macOS)
+cd edrys-executable-linux-x64
+./edrys-server-linux-x64 --port 3210
+
+# Or use the startup script
+./start-server.sh
 ```
 
 The standalone executable supports all the same command-line options as the Node.js version.
+
+> **Note:** The `--ssl` / `--https` flag requires **OpenSSL** to be installed on the target machine (used to generate self-signed certificates). On Linux install it with `sudo apt-get install openssl`, on macOS with `brew install openssl`. If you already have certificate files, you can skip this requirement by passing `--ssl-key` and `--ssl-cert` directly.
 
 ## License
 

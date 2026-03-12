@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build dist
+        run: npm run dist
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xz-utils unzip
+
+      - name: Build cross-platform executables
+        run: node build-cross-platform.cjs
+
+      - name: Create ZIP archives
+        run: |
+          zip -r edrys-server-linux-x64.zip edrys-executable-linux-x64/
+          zip -r edrys-server-win-x64.zip edrys-executable-win-x64/
+          zip -r edrys-server-macos-x64.zip edrys-executable-darwin-x64/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            edrys-server-linux-x64.zip
+            edrys-server-win-x64.zip
+            edrys-server-macos-x64.zip

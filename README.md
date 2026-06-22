@@ -109,19 +109,25 @@ ws.onmessage = (event) => {
 
 ## Video Streaming Protocol
 
-The streaming WebSocket endpoint uses a simple JSON-based protocol:
+The streaming WebSocket endpoint relays MediaRecorder output (WebM/VP8[/Opus]
+chunks) from one source per room to all viewers in that room. Media chunks are
+sent as binary WebSocket messages; control messages are JSON text frames:
 
 ### Message Types:
 
-1. **Register as a stream source**
+1. **Register as a stream source** (station → server). Registration is
+   last-writer-wins: a re-registration for the same room replaces the previous
+   source and terminates its socket.
    ```json
    {
      "type": "register-source",
-     "roomId": "unique-room-identifier"
+     "roomId": "unique-room-identifier",
+     "streamName": "Camera 1",
+     "mimeType": "video/webm;codecs=\"vp8,opus\""
    }
    ```
 
-2. **Join a room to receive video**
+2. **Join a room to receive video** (viewer → server)
    ```json
    {
      "type": "join-room",
@@ -129,29 +135,30 @@ The streaming WebSocket endpoint uses a simple JSON-based protocol:
    }
    ```
 
-3. **Send a video frame**
+3. **Source available** (server → viewer, on join or registration). The viewer
+   must create its MediaSource SourceBuffer with exactly this mimeType.
    ```json
    {
-     "type": "frame",
-     "data": "base64-encoded-frame-data"
+     "type": "source-available",
+     "roomId": "unique-room-identifier",
+     "mimeType": "video/webm;codecs=\"vp8,opus\""
    }
    ```
 
-4. **Ping/pong for latency measurement**
+4. **Viewer joined** (server → source). The source restarts its MediaRecorder
+   so the new viewer receives a fresh init segment at t=0.
    ```json
    {
-     "type": "ping",
-     "timestamp": 1620000000000
+     "type": "viewer-joined",
+     "roomId": "unique-room-identifier"
    }
    ```
 
-5. **Client statistics**
+5. **Source disconnected** (server → viewers)
    ```json
    {
-     "type": "stats",
-     "fps": 30,
-     "bufferSize": 2,
-     "dropped": 0
+     "type": "source-disconnected",
+     "roomId": "unique-room-identifier"
    }
    ```
 

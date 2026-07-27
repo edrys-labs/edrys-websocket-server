@@ -107,6 +107,13 @@ const messageSync = 0
 const messageAwareness = 1
 // const messageAuth = 2
 
+// Sub-channel inside a messageAwareness frame: [opcode 1][channel][update].
+// MAIN carries the signed identity handshake + heartbeats; APP carries
+// module-owned presence (cursors). They are kept as two independent Awareness
+// instances so module data can never clobber identity state.
+const AWARENESS_CHANNEL_MAIN = 0
+const AWARENESS_CHANNEL_APP = 1
+
 /**
  * @param {Uint8Array} update
  * @param {any} _origin
@@ -154,10 +161,18 @@ export class WSSharedDoc extends Y.Doc {
     this.awareness = new awarenessProtocol.Awareness(this)
     this.awareness.setLocalState(null)
     /**
-     * @param {{ added: Array<number>, updated: Array<number>, removed: Array<number> }} changes
-     * @param {Object | null} conn Origin is the connection that made the change
+     * Module-owned presence (cursors), relayed on AWARENESS_CHANNEL_APP.
+     * Separate instance so it shares no state with the identity handshake.
+     * @type {awarenessProtocol.Awareness}
      */
-    const awarenessChangeHandler = ({ added, updated, removed }, conn) => {
+    this.appAwareness = new awarenessProtocol.Awareness(this)
+    this.appAwareness.setLocalState(null)
+    /**
+     * @param {awarenessProtocol.Awareness} awareness
+     * @param {number} channel
+     * @return {(changes: { added: Array<number>, updated: Array<number>, removed: Array<number> }, conn: Object | null) => void}
+     */
+    const makeAwarenessChangeHandler = (awareness, channel) => ({ added, updated, removed }, conn) => {
       const changedClients = added.concat(updated, removed)
       if (conn !== null) {
         const connControlledIDs = /** @type {Set<number>} */ (this.conns.get(conn))
@@ -166,16 +181,18 @@ export class WSSharedDoc extends Y.Doc {
           removed.forEach(clientID => { connControlledIDs.delete(clientID) })
         }
       }
-      // broadcast awareness update
+      // broadcast awareness update, preserving the sub-channel
       const encoder = encoding.createEncoder()
       encoding.writeVarUint(encoder, messageAwareness)
-      encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients))
+      encoding.writeVarUint(encoder, channel)
+      encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients))
       const buff = encoding.toUint8Array(encoder)
       this.conns.forEach((_, c) => {
         send(this, c, buff)
       })
     }
-    this.awareness.on('update', awarenessChangeHandler)
+    this.awareness.on('update', makeAwarenessChangeHandler(this.awareness, AWARENESS_CHANNEL_MAIN))
+    this.appAwareness.on('update', makeAwarenessChangeHandler(this.appAwareness, AWARENESS_CHANNEL_APP))
     this.on('update', /** @type {any} */ (updateHandler))
     if (isCallbackSet) {
       this.on('update', (_update, _origin, doc) => {
@@ -226,7 +243,12 @@ const messageListener = (conn, doc, message) => {
         }
         break
       case messageAwareness: {
-        awarenessProtocol.applyAwarenessUpdate(doc.awareness, decoding.readVarUint8Array(decoder), conn)
+        const channel = decoding.readVarUint(decoder)
+        awarenessProtocol.applyAwarenessUpdate(
+          channel === AWARENESS_CHANNEL_APP ? doc.appAwareness : doc.awareness,
+          decoding.readVarUint8Array(decoder),
+          conn
+        )
         break
       }
     }
@@ -249,7 +271,9 @@ const closeConn = (doc, conn) => {
     // @ts-ignore
     const controlledIds = doc.conns.get(conn)
     doc.conns.delete(conn)
+    // Clear both sub-channels, else a disconnect leaves a ghost cursor behind.
     awarenessProtocol.removeAwarenessStates(doc.awareness, Array.from(controlledIds), null)
+    awarenessProtocol.removeAwarenessStates(doc.appAwareness, Array.from(controlledIds), null)
     if (doc.conns.size === 0 && persistence !== null) {
       // if persisted, we store state and destroy ydocument
       persistence.writeState(doc.name, doc).then(() => {
@@ -325,12 +349,19 @@ export const setupWSConnection = (conn, req, { docName = (req.url || '').slice(1
     encoding.writeVarUint(encoder, messageSync)
     syncProtocol.writeSyncStep1(encoder, doc)
     send(doc, conn, encoding.toUint8Array(encoder))
-    const awarenessStates = doc.awareness.getStates()
-    if (awarenessStates.size > 0) {
-      const encoder = encoding.createEncoder()
-      encoding.writeVarUint(encoder, messageAwareness)
-      encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(doc.awareness, Array.from(awarenessStates.keys())))
-      send(doc, conn, encoding.toUint8Array(encoder))
+    // Seed the joining client on both sub-channels.
+    for (const [awareness, channel] of /** @type {Array<[awarenessProtocol.Awareness, number]>} */ ([
+      [doc.awareness, AWARENESS_CHANNEL_MAIN],
+      [doc.appAwareness, AWARENESS_CHANNEL_APP]
+    ])) {
+      const awarenessStates = awareness.getStates()
+      if (awarenessStates.size > 0) {
+        const encoder = encoding.createEncoder()
+        encoding.writeVarUint(encoder, messageAwareness)
+        encoding.writeVarUint(encoder, channel)
+        encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, Array.from(awarenessStates.keys())))
+        send(doc, conn, encoding.toUint8Array(encoder))
+      }
     }
   }
 }

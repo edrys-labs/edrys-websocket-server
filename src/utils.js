@@ -105,7 +105,11 @@ export const docs = new Map()
 
 const messageSync = 0
 const messageAwareness = 1
-// const messageAuth = 2
+// Pub/sub frames (broadcast and targeted). The server does not interpret these;
+// it relays them verbatim so ordering and framing are preserved end to end.
+// Awareness is last-writer-wins state replication and cannot carry a stream.
+const messagePubSub = 2
+const messagePubSubTargeted = 4
 
 // Sub-channel inside a messageAwareness frame: [opcode 1][channel][update].
 // MAIN carries the signed identity handshake + heartbeats; APP carries
@@ -249,6 +253,16 @@ const messageListener = (conn, doc, message) => {
           decoding.readVarUint8Array(decoder),
           conn
         )
+        break
+      }
+      case messagePubSub:
+      case messagePubSubTargeted: {
+        // Relay untouched to every other peer; the sender already has it, and
+        // targeted delivery is filtered client-side by localId. Parsing here
+        // would break framing the way awareness parsing once did.
+        doc.conns.forEach((_, c) => {
+          if (c !== conn) send(doc, c, message)
+        })
         break
       }
     }

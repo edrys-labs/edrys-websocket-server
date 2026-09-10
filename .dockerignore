@@ -1,0 +1,9 @@
+node_modules
+edrys-executable
+edrys-executable-*
+.git
+.github
+tmp
+dbDir
+certs
+src

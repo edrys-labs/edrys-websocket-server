@@ -27,12 +27,6 @@ export class WSSharedDoc extends Y.Doc {
      * @type {awarenessProtocol.Awareness}
      */
     awareness: awarenessProtocol.Awareness;
-    /**
-     * Module-owned presence (cursors), relayed on AWARENESS_CHANNEL_APP.
-     * Separate instance so it shares no state with the identity handshake.
-     * @type {awarenessProtocol.Awareness}
-     */
-    appAwareness: awarenessProtocol.Awareness;
     whenInitialized: Promise<void>;
 }
 export function getYDoc(docname: string, gc?: boolean): WSSharedDoc;

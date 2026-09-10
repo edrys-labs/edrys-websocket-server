@@ -129,18 +129,17 @@ const docs = new Map();
 
 const messageSync = 0;
 const messageAwareness = 1;
-// Pub/sub frames (broadcast and targeted). The server does not interpret these;
-// it relays them verbatim so ordering and framing are preserved end to end.
-// Awareness is last-writer-wins state replication and cannot carry a stream.
-const messagePubSub = 2;
-const messagePubSubTargeted = 4;
 
-// Sub-channel inside a messageAwareness frame: [opcode 1][channel][update].
-// MAIN carries the signed identity handshake + heartbeats; APP carries
-// module-owned presence (cursors). They are kept as two independent Awareness
-// instances so module data can never clobber identity state.
-const AWARENESS_CHANNEL_MAIN = 0;
-const AWARENESS_CHANNEL_APP = 1;
+// Opcodes the server relays verbatim; parsing them would break framing.
+// MUST track y-generic's table (src/index.ts) — an unlisted opcode falls off
+// the switch and is dropped silently.
+const messagePubSub = 2;
+const messageSyncVerified = 3;
+const messageBatch = 4;
+const messageSyncDigest = 5;
+const messageSyncPush = 6;
+const messagePubSubTargeted = 7;
+const messageAwarenessApp = 8;
 
 /**
  * @param {Uint8Array} update
@@ -189,18 +188,10 @@ class WSSharedDoc extends Y__namespace.Doc {
     this.awareness = new awarenessProtocol__namespace.Awareness(this);
     this.awareness.setLocalState(null);
     /**
-     * Module-owned presence (cursors), relayed on AWARENESS_CHANNEL_APP.
-     * Separate instance so it shares no state with the identity handshake.
-     * @type {awarenessProtocol.Awareness}
+     * @param {{ added: Array<number>, updated: Array<number>, removed: Array<number> }} changes
+     * @param {Object | null} conn
      */
-    this.appAwareness = new awarenessProtocol__namespace.Awareness(this);
-    this.appAwareness.setLocalState(null);
-    /**
-     * @param {awarenessProtocol.Awareness} awareness
-     * @param {number} channel
-     * @return {(changes: { added: Array<number>, updated: Array<number>, removed: Array<number> }, conn: Object | null) => void}
-     */
-    const makeAwarenessChangeHandler = (awareness, channel) => ({ added, updated, removed }, conn) => {
+    const awarenessChangeHandler = ({ added, updated, removed }, conn) => {
       const changedClients = added.concat(updated, removed);
       if (conn !== null) {
         const connControlledIDs = /** @type {Set<number>} */ (this.conns.get(conn));
@@ -209,18 +200,15 @@ class WSSharedDoc extends Y__namespace.Doc {
           removed.forEach(clientID => { connControlledIDs.delete(clientID); });
         }
       }
-      // broadcast awareness update, preserving the sub-channel
       const encoder = encoding__namespace.createEncoder();
       encoding__namespace.writeVarUint(encoder, messageAwareness);
-      encoding__namespace.writeVarUint(encoder, channel);
-      encoding__namespace.writeVarUint8Array(encoder, awarenessProtocol__namespace.encodeAwarenessUpdate(awareness, changedClients));
+      encoding__namespace.writeVarUint8Array(encoder, awarenessProtocol__namespace.encodeAwarenessUpdate(this.awareness, changedClients));
       const buff = encoding__namespace.toUint8Array(encoder);
       this.conns.forEach((_, c) => {
         send(this, c, buff);
       });
     };
-    this.awareness.on('update', makeAwarenessChangeHandler(this.awareness, AWARENESS_CHANNEL_MAIN));
-    this.appAwareness.on('update', makeAwarenessChangeHandler(this.appAwareness, AWARENESS_CHANNEL_APP));
+    this.awareness.on('update', awarenessChangeHandler);
     this.on('update', /** @type {any} */ (updateHandler));
     if (callback.isCallbackSet) {
       this.on('update', (_update, _origin, doc) => {
@@ -271,19 +259,24 @@ const messageListener = (conn, doc, message) => {
         }
         break
       case messageAwareness: {
-        const channel = decoding__namespace.readVarUint(decoder);
+        // [1][update] — no channel varint; app awareness is opcode 8 and is
+        // relayed, not applied, so module cursors never touch peer bookkeeping.
         awarenessProtocol__namespace.applyAwarenessUpdate(
-          channel === AWARENESS_CHANNEL_APP ? doc.appAwareness : doc.awareness,
+          doc.awareness,
           decoding__namespace.readVarUint8Array(decoder),
           conn
         );
         break
       }
       case messagePubSub:
-      case messagePubSubTargeted: {
+      case messageSyncVerified:
+      case messageBatch:
+      case messageSyncDigest:
+      case messageSyncPush:
+      case messagePubSubTargeted:
+      case messageAwarenessApp: {
         // Relay untouched to every other peer; the sender already has it, and
-        // targeted delivery is filtered client-side by localId. Parsing here
-        // would break framing the way awareness parsing once did.
+        // targeted delivery is filtered client-side by localId.
         doc.conns.forEach((_, c) => {
           if (c !== conn) send(doc, c, message);
         });
@@ -309,9 +302,7 @@ const closeConn = (doc, conn) => {
     // @ts-ignore
     const controlledIds = doc.conns.get(conn);
     doc.conns.delete(conn);
-    // Clear both sub-channels, else a disconnect leaves a ghost cursor behind.
     awarenessProtocol__namespace.removeAwarenessStates(doc.awareness, Array.from(controlledIds), null);
-    awarenessProtocol__namespace.removeAwarenessStates(doc.appAwareness, Array.from(controlledIds), null);
     if (doc.conns.size === 0 && persistence !== null) {
       // if persisted, we store state and destroy ydocument
       persistence.writeState(doc.name, doc).then(() => {
@@ -387,19 +378,12 @@ const setupWSConnection = (conn, req, { docName = (req.url || '').slice(1).split
     encoding__namespace.writeVarUint(encoder, messageSync);
     syncProtocol__namespace.writeSyncStep1(encoder, doc);
     send(doc, conn, encoding__namespace.toUint8Array(encoder));
-    // Seed the joining client on both sub-channels.
-    for (const [awareness, channel] of /** @type {Array<[awarenessProtocol.Awareness, number]>} */ ([
-      [doc.awareness, AWARENESS_CHANNEL_MAIN],
-      [doc.appAwareness, AWARENESS_CHANNEL_APP]
-    ])) {
-      const awarenessStates = awareness.getStates();
-      if (awarenessStates.size > 0) {
-        const encoder = encoding__namespace.createEncoder();
-        encoding__namespace.writeVarUint(encoder, messageAwareness);
-        encoding__namespace.writeVarUint(encoder, channel);
-        encoding__namespace.writeVarUint8Array(encoder, awarenessProtocol__namespace.encodeAwarenessUpdate(awareness, Array.from(awarenessStates.keys())));
-        send(doc, conn, encoding__namespace.toUint8Array(encoder));
-      }
+    const awarenessStates = doc.awareness.getStates();
+    if (awarenessStates.size > 0) {
+      const encoder = encoding__namespace.createEncoder();
+      encoding__namespace.writeVarUint(encoder, messageAwareness);
+      encoding__namespace.writeVarUint8Array(encoder, awarenessProtocol__namespace.encodeAwarenessUpdate(doc.awareness, Array.from(awarenessStates.keys())));
+      send(doc, conn, encoding__namespace.toUint8Array(encoder));
     }
   }
 };

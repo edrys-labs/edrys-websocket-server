@@ -143,6 +143,26 @@ const AWARENESS_CHANNEL_MAIN = 0;
 const AWARENESS_CHANNEL_APP = 1;
 
 /**
+ * Awareness frame for one connection. edrys-provider speaks
+ * [1][channel][update]; plain y-websocket clients (y-websocket's own
+ * provider, y-generic) speak [1][update] and only know the main channel.
+ *
+ * @param {any} conn
+ * @param {awarenessProtocol.Awareness} awareness
+ * @param {number} channel
+ * @param {Array<number>} clients
+ * @return {Uint8Array|null}
+ */
+const encodeAwareness = (conn, awareness, channel, clients) => {
+  if (conn.plainAwareness && channel !== AWARENESS_CHANNEL_MAIN) return null
+  const encoder = encoding__namespace.createEncoder();
+  encoding__namespace.writeVarUint(encoder, messageAwareness);
+  if (!conn.plainAwareness) encoding__namespace.writeVarUint(encoder, channel);
+  encoding__namespace.writeVarUint8Array(encoder, awarenessProtocol__namespace.encodeAwarenessUpdate(awareness, clients));
+  return encoding__namespace.toUint8Array(encoder)
+};
+
+/**
  * @param {Uint8Array} update
  * @param {any} _origin
  * @param {WSSharedDoc} doc
@@ -209,14 +229,11 @@ class WSSharedDoc extends Y__namespace.Doc {
           removed.forEach(clientID => { connControlledIDs.delete(clientID); });
         }
       }
-      // broadcast awareness update, preserving the sub-channel
-      const encoder = encoding__namespace.createEncoder();
-      encoding__namespace.writeVarUint(encoder, messageAwareness);
-      encoding__namespace.writeVarUint(encoder, channel);
-      encoding__namespace.writeVarUint8Array(encoder, awarenessProtocol__namespace.encodeAwarenessUpdate(awareness, changedClients));
-      const buff = encoding__namespace.toUint8Array(encoder);
+      // broadcast awareness update, preserving the sub-channel, in the
+      // format each connection speaks
       this.conns.forEach((_, c) => {
-        send(this, c, buff);
+        const buff = encodeAwareness(c, awareness, channel, changedClients);
+        if (buff) send(this, c, buff);
       });
     };
     this.awareness.on('update', makeAwarenessChangeHandler(this.awareness, AWARENESS_CHANNEL_MAIN));
@@ -271,10 +288,30 @@ const messageListener = (conn, doc, message) => {
         }
         break
       case messageAwareness: {
-        const channel = decoding__namespace.readVarUint(decoder);
+        // [1][channel][update] (edrys-provider) or [1][update] (plain
+        // y-websocket, y-generic): only the first one parses with a known
+        // channel and nothing left over
+        const start = decoder.pos;
+        let channel = AWARENESS_CHANNEL_MAIN;
+        let update;
+        try {
+          channel = decoding__namespace.readVarUint(decoder);
+          update = decoding__namespace.readVarUint8Array(decoder);
+          if (channel > AWARENESS_CHANNEL_APP || decoding__namespace.hasContent(decoder)) throw new Error('plain')
+        } catch (_) {
+          decoder.pos = start;
+          channel = AWARENESS_CHANNEL_MAIN;
+          update = decoding__namespace.readVarUint8Array(decoder);
+          if (!conn.plainAwareness) {
+            conn.plainAwareness = true;
+            // the seed on connect was in the other format, send it again
+            const states = Array.from(doc.awareness.getStates().keys());
+            if (states.length > 0) send(doc, conn, /** @type {Uint8Array} */ (encodeAwareness(conn, doc.awareness, AWARENESS_CHANNEL_MAIN, states)));
+          }
+        }
         awarenessProtocol__namespace.applyAwarenessUpdate(
           channel === AWARENESS_CHANNEL_APP ? doc.appAwareness : doc.awareness,
-          decoding__namespace.readVarUint8Array(decoder),
+          update,
           conn
         );
         break
@@ -289,6 +326,12 @@ const messageListener = (conn, doc, message) => {
         });
         break
       }
+      default:
+        // other y-generic messages (verified sync, digest beacons, pushes):
+        // relay unread like pubsub, the server does not need to understand them
+        doc.conns.forEach((_, c) => {
+          if (c !== conn) send(doc, c, message);
+        });
     }
   } catch (err) {
     console.error(err);

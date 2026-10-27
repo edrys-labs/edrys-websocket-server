@@ -1,6 +1,6 @@
 {
-  "name": "edrys-websocket-server",
-  "version": "1.0.4",
+  "name": "@edryslabs/websocket-server",
+  "version": "1.1.0",
   "description": "Backend for y-websocket with integrated video streaming",
   "type": "module",
   "sideEffects": false,
@@ -13,6 +13,7 @@
     "dist": "rm -rf dist && rollup -c && tsc",
     "lint": "standard && tsc",
     "test": "npm run lint",
+    "prepublishOnly": "npm run dist",
     "preversion": "npm run lint && npm run dist && test -e dist/src/server.d.ts && test -e dist/server.cjs"
   },
   "bin": {
@@ -23,6 +24,9 @@
     "dist/*",
     "src/*"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     "./package.json": "./package.json",
     "./utils": {

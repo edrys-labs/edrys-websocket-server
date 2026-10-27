@@ -4,10 +4,6 @@
   "description": "Backend for y-websocket with integrated video streaming",
   "type": "module",
   "sideEffects": false,
-  "funding": {
-    "type": "GitHub Sponsors ❤",
-    "url": "https://github.com/sponsors/dmonad"
-  },
   "scripts": {
     "start": "node ./src/server.js",
     "dist": "rm -rf dist && rollup -c && tsc",
@@ -17,8 +13,7 @@
     "preversion": "npm run lint && npm run dist && test -e dist/src/server.d.ts && test -e dist/server.cjs"
   },
   "bin": {
-    "y-websocket-server": "src/server.js",
-    "y-websocket": "src/server.js"
+    "edrys-websocket-server": "src/server.js"
   },
   "files": [
     "dist/*",
@@ -47,13 +42,17 @@
     "url": "git+https://github.com/edrys-labs/edrys-websocket-server.git"
   },
   "keywords": [
-    "Yjs"
+    "edrys",
+    "Yjs",
+    "websocket",
+    "streaming"
   ],
-  "author": "Kevin Jahns <kevin.jahns@protonmail.com>",
+  "author": "edrys-labs (https://github.com/edrys-labs)",
   "license": "MIT",
   "contributors": [
-    "Andre Dietrich <https://github.com/andre-dietrich>",
-    "Jihad Hyadi <https://github.com/jh-488>" 
+    "Kevin Jahns <kevin.jahns@protonmail.com>",
+    "Andre Dietrich (https://github.com/andre-dietrich)",
+    "Jihad Hyadi (https://github.com/jh-488)"
   ],
   "bugs": {
     "url": "https://github.com/edrys-labs/edrys-websocket-server/issues"

@@ -256,6 +256,4 @@ The standalone executable supports all the same command-line options as the Node
 
 ## License
 
-[The MIT License](./LICENSE) © Kevin Jahns
-
-Fork maintained by: [edrys-labs](https://github.com/edrys-labs)
+[MIT](LICENSE) © Kevin Jahns, edrys-labs

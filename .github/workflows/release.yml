@@ -46,7 +46,7 @@ jobs:
         with:
           name: Release ${{ github.ref_name }}
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |
             edrys-server-linux-x64.zip

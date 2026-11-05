@@ -1,6 +1,6 @@
 {
   "name": "@edryslabs/websocket-server",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Backend for y-websocket with integrated video streaming",
   "type": "module",
   "sideEffects": false,

@@ -254,6 +254,10 @@ The standalone executable supports all the same command-line options as the Node
 
 > **Note:** The `--ssl` / `--https` flag requires **OpenSSL** to be installed on the target machine (used to generate self-signed certificates). On Linux install it with `sudo apt-get install openssl`, on macOS with `brew install openssl`. If you already have certificate files, you can skip this requirement by passing `--ssl-key` and `--ssl-cert` directly.
 
+## Releasing
+
+`npm version <version>` and `git push --follow-tags` on `main`. The tag (without a `v`) starts two workflows: [`publish.yml`](.github/workflows/publish.yml) checks that it matches `package.json`, builds `dist/` and publishes to npm (a pre-release version like `1.2.0-dev.0` under the `next` tag, any other under `latest`); [`release.yml`](.github/workflows/release.yml) builds the standalone executables and creates the GitHub release.
+
 ## License
 
 [MIT](LICENSE) © Kevin Jahns, edrys-labs

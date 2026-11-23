@@ -8,9 +8,9 @@
     "start": "node ./src/server.js",
     "dist": "rm -rf dist && rollup -c && tsc",
     "lint": "standard && tsc",
-    "test": "npm run lint",
+    "test": "node --test test/*.test.js",
     "prepublishOnly": "npm run dist",
-    "preversion": "npm run lint && npm run dist && test -e dist/src/server.d.ts && test -e dist/server.cjs"
+    "preversion": "npm run lint && npm test && npm run dist && test -e dist/src/server.d.ts && test -e dist/server.cjs"
   },
   "bin": {
     "edrys-websocket-server": "src/server.js"

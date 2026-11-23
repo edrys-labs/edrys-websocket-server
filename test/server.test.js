@@ -27,6 +27,23 @@ const exited = child => new Promise(resolve => {
 /** @param {number} ms */
 const timeout = ms => new Promise((resolve, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms))
 
+/**
+ * Run src/server.js with `args`, expecting it to exit on its own; resolves
+ * with the exit code. A server that keeps running is killed, so a failing
+ * test cannot leave a process behind that keeps the test runner alive.
+ *
+ * @param {string[]} args
+ * @param {number} [ms]
+ */
+async function runToExit (args, ms = 3000) {
+  const child = spawn(process.execPath, [path.resolve(import.meta.dirname, '..', 'src/server.js'), ...args], { stdio: 'ignore' })
+  try {
+    return await Promise.race([exited(child), timeout(ms)])
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL')
+  }
+}
+
 for (const p of ['/stream', '/stream/', '/stream?x=1']) {
   test(`${p} goes to the stream relay`, async () => {
     const s = await connect(server.url(p))
@@ -61,18 +78,17 @@ test('a malformed request target on upgrade does not take the server down', asyn
 for (const signal of /** @type {const} */ (['SIGTERM', 'SIGINT'])) {
   test(`${signal} shuts down cleanly (exit code 0)`, async () => {
     const s = await startServer()
-    s.child.kill(signal)
-    assert.equal(await Promise.race([exited(s.child), timeout(3000)]), 0)
+    try {
+      s.child.kill(signal)
+      assert.equal(await Promise.race([exited(s.child), timeout(3000)]), 0)
+    } finally {
+      await s.stop()
+    }
   })
 }
 
 test('a port that is already in use makes the server exit with an error', async () => {
-  const child = spawn(process.execPath, ['src/server.js', '--port', String(server.port), '--host', '127.0.0.1'], {
-    cwd: path.resolve(import.meta.dirname, '..'),
-    stdio: 'ignore'
-  })
-  const code = await Promise.race([exited(child), timeout(3000)]).catch(e => { child.kill('SIGKILL'); throw e })
-  assert.notEqual(code, 0)
+  assert.equal(await runToExit(['--port', String(server.port), '--host', '127.0.0.1']), 1)
 })
 
 test('NO_COLOR turns off ANSI colors', async () => {
@@ -159,4 +175,25 @@ test('--ssl does not overwrite a certificate someone else put in certs/', { skip
     await s.stop()
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+for (const form of ['space', 'equals']) {
+  test(`--ssl-key/--ssl-cert with ${form === 'space' ? '"--ssl-key PATH"' : '"--ssl-key=PATH"'} serve https`, { skip: !hasOpenSSL && 'no openssl' }, async () => {
+    const dir = tmpDir()
+    makeCert(dir, 30, '/CN=custom.example')
+    const key = path.join(dir, 'certs', 'server-key.pem')
+    const cert = path.join(dir, 'certs', 'server-cert.pem')
+    const args = form === 'space' ? ['--ssl-key', key, '--ssl-cert', cert] : [`--ssl-key=${key}`, `--ssl-cert=${cert}`]
+    const s = await startServer({ args, cwd: dir, https: true })
+    try {
+      assert.equal((await get(`${s.base}/`)).body, 'okay')
+    } finally {
+      await s.stop()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
+
+test('only one of --ssl-key/--ssl-cert is an error, not a silent fallback', async () => {
+  assert.equal(await runToExit(['--port', '0', '--host', '127.0.0.1', '--ssl-key', '/nonexistent.pem']), 1)
 })

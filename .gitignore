@@ -7,3 +7,4 @@ dbDir
 certs/
 edrys-executable
 edrys-executable-*
+dist/

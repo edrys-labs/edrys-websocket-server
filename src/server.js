@@ -39,10 +39,10 @@ function showHelp () {
     '  --ssl, --https              Enable HTTPS/WSS with self-signed certificate'
   )
   console.log(
-    '  --ssl-key=PATH              Path to SSL private key file'
+    '  --ssl-key PATH              Path to SSL private key file (or --ssl-key=PATH)'
   )
   console.log(
-    '  --ssl-cert=PATH             Path to SSL certificate file'
+    '  --ssl-cert PATH             Path to SSL certificate file (or --ssl-cert=PATH)'
   )
   console.log('  --help, -h                  Show this help message')
   console.log('\nEnvironment Variables:')
@@ -72,25 +72,30 @@ function parseArgs () {
     host: ''
   }
 
+  // options with a value, as "--name value" or "--name=value"
+  /** @type {Record<string, 'port' | 'host' | 'sslKey' | 'sslCert'>} */
+  const valued = { '--port': 'port', '--host': 'host', '--ssl-key': 'sslKey', '--ssl-cert': 'sslCert' }
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
+    const eq = arg.indexOf('=')
+    const name = eq > 0 ? arg.slice(0, eq) : arg
 
-    if (arg === '--port' && i + 1 < args.length) {
-      result.port = args[++i]
-    } else if (arg === '--host' && i + 1 < args.length) {
-      result.host = args[++i]
-    } else if (arg.startsWith('--port=')) {
-      result.port = arg.substring('--port='.length)
-    } else if (arg.startsWith('--host=')) {
-      result.host = arg.substring('--host='.length)
+    if (valued[name]) {
+      if (eq > 0) {
+        result[valued[name]] = arg.slice(eq + 1)
+      } else if (i + 1 < args.length) {
+        result[valued[name]] = args[++i]
+      } else {
+        console.error(`${name} needs a value`)
+        process.exit(1)
+      }
     } else if (arg === '--ssl' || arg === '--https') {
       result.ssl = true
-    } else if (arg.startsWith('--ssl-key=')) {
-      result.sslKey = arg.substring('--ssl-key='.length)
-    } else if (arg.startsWith('--ssl-cert=')) {
-      result.sslCert = arg.substring('--ssl-cert='.length)
     } else if (arg === '--help' || arg === '-h') {
       result.help = true
+    } else {
+      console.warn(`Ignoring unknown argument: ${arg} (see --help)`)
     }
   }
 
@@ -102,7 +107,12 @@ function parseArgs () {
     result.sslCert = process.env.SSL_CERT
   }
 
-  // If SSL key and cert are provided, enable SSL
+  // Both given: use them. Only one: an error, not a silent fallback to a
+  // self-signed certificate or plain HTTP.
+  if (!result.sslKey !== !result.sslCert) {
+    console.error('Give both --ssl-key and --ssl-cert (or SSL_KEY and SSL_CERT), not just one.')
+    process.exit(1)
+  }
   if (result.sslKey && result.sslCert) {
     result.ssl = true
   }

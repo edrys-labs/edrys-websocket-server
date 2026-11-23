@@ -3,12 +3,11 @@
   "version": "1.1.1",
   "description": "Backend for y-websocket with integrated video streaming",
   "type": "module",
-  "sideEffects": false,
   "scripts": {
     "start": "node ./src/server.js",
     "dist": "rm -rf dist && rollup -c && tsc",
     "lint": "standard && tsc",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-timeout=30000 test/*.test.js",
     "prepublishOnly": "npm run dist",
     "preversion": "npm run lint && npm test && npm run dist && test -e dist/src/server.d.ts && test -e dist/server.cjs"
   },
@@ -66,6 +65,7 @@
   },
   "dependencies": {
     "lib0": "^0.2.104",
+    "ws": "^6.2.7",
     "y-protocols": "^1.0.5"
   },
   "devDependencies": {
@@ -78,10 +78,6 @@
   },
   "peerDependencies": {
     "yjs": "^13.5.6"
-  },
-  "optionalDependencies": {
-    "ws": "^6.2.1",
-    "y-leveldb": "^0.1.0"
   },
   "engines": {
     "npm": ">=8.0.0",

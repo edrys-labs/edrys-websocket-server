@@ -23,7 +23,7 @@ This repository implements a server that handles both Yjs document collaboration
 Start the server:
 
 ```
-node dist/server.cjs --port 3210
+node src/server.js --port 3210
 ```
 
 #### SSL/TLS Support (HTTPS/WSS)
@@ -32,10 +32,10 @@ For secure connections (required when your app is hosted on HTTPS), enable SSL/T
 
 ```bash
 # Enable SSL with auto-generated self-signed certificates
-node dist/server.cjs --ssl --port 3210
+node src/server.js --ssl --port 3210
 
 # Or use custom certificates
-node dist/server.cjs --ssl-key /path/to/private.key --ssl-cert /path/to/certificate.crt --port 3210
+node src/server.js --ssl-key /path/to/private.key --ssl-cert /path/to/certificate.crt --port 3210
 ```
 
 **Important for HTTPS-hosted applications:** Browsers enforce mixed content security policies that prevent HTTPS websites from connecting to non-secure WebSocket servers (ws://). You **must** use secure WebSocket connections (wss://) when your application is served over HTTPS.
@@ -168,7 +168,7 @@ sent as binary WebSocket messages; control messages are JSON text frames:
 
 ```bash
 # Basic server options
-node dist/server.cjs [options]
+node src/server.js [options]
 
 Options:
   --port=NUMBER        Port to listen on (default: 1234)
@@ -196,7 +196,7 @@ export SSL_KEY=/path/to/private.key
 export SSL_CERT=/path/to/certificate.crt
 
 # Start server
-node dist/server.cjs
+node src/server.js
 ```
 
 ### SSL/TLS Certificate Management
@@ -207,7 +207,7 @@ For development and testing, the server can automatically generate self-signed c
 
 ```bash
 # Auto-generate self-signed certificates
-node dist/server.cjs --ssl
+node src/server.js --ssl
 ```
 
 Self-signed certificates will be saved in the `./certs/` directory and reused on subsequent starts.

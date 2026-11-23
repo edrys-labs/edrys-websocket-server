@@ -47,6 +47,19 @@ test('a late joiner gets the existing state from the server', async () => {
   await c.client.close()
 })
 
+test('a room nobody is in anymore starts empty again', async () => {
+  const a = await connectYDoc(server.url('/emptied'))
+  a.doc.getText('t').insert(0, 'gone when everyone leaves')
+  await sleep(100)
+  await a.client.close()
+  await sleep(100)
+
+  const b = await connectYDoc(server.url('/emptied'))
+  await sleep(200)
+  assert.equal(b.doc.getText('t').toString(), '')
+  await b.client.close()
+})
+
 test('rooms are isolated from each other', async () => {
   const a = await connectYDoc(server.url('/iso-a'))
   const b = await connectYDoc(server.url('/iso-b'))

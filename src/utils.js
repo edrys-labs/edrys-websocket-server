@@ -10,31 +10,6 @@ import * as eventloop from 'lib0/eventloop'
 
 import { callbackHandler, isCallbackSet } from './callback.js'
 
-// Simple in-memory persistence using Map (for session persistence)
-class SimpleMemoryPersistence {
-  constructor () {
-    this.docs = new Map()
-    // console.info('💾 In-memory session persistence enabled')
-  }
-
-  async getYDoc (docName) {
-    if (!this.docs.has(docName)) {
-      const doc = new Y.Doc()
-      this.docs.set(docName, doc)
-      return doc
-    }
-    return this.docs.get(docName)
-  }
-
-  storeUpdate (docName, update) {
-    // Updates are automatically applied to the doc in memory
-    // No additional storage needed for in-memory persistence
-  }
-}
-
-// Setup simple in-memory persistence for session continuity
-const memoryPersistence = new SimpleMemoryPersistence()
-
 const CALLBACK_DEBOUNCE_WAIT = parseInt(process.env.CALLBACK_DEBOUNCE_WAIT || '2000')
 const CALLBACK_DEBOUNCE_MAXWAIT = parseInt(process.env.CALLBACK_DEBOUNCE_MAXWAIT || '10000')
 
@@ -42,45 +17,17 @@ const debouncer = eventloop.createDebouncer(CALLBACK_DEBOUNCE_WAIT, CALLBACK_DEB
 
 const wsReadyStateConnecting = 0
 const wsReadyStateOpen = 1
-const wsReadyStateClosing = 2 // eslint-disable-line
-const wsReadyStateClosed = 3 // eslint-disable-line
 
 // disable gc when using snapshots!
 const gcEnabled = process.env.GC !== 'false' && process.env.GC !== '0'
-const persistenceDir = process.env.YPERSISTENCE
 /**
+ * Optional persistence layer (y-websocket API, set with setPersistence). None
+ * by default: a room's document lives in memory while someone is connected
+ * and is dropped when the last connection closes.
+ *
  * @type {{bindState: function(string,WSSharedDoc):void, writeState:function(string,WSSharedDoc):Promise<any>, provider: any}|null}
  */
 let persistence = null
-
-// Setup persistence based on environment
-if (typeof persistenceDir === 'string') {
-  console.info('📁 Persisting documents in memory for session: "' + persistenceDir + '"')
-  persistence = {
-    provider: memoryPersistence,
-    bindState: async (docName, ydoc) => {
-      const persistedYdoc = await memoryPersistence.getYDoc(docName)
-      Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(persistedYdoc))
-      ydoc.on('update', update => {
-        memoryPersistence.storeUpdate(docName, update)
-      })
-    },
-    writeState: async (_docName, _ydoc) => {}
-  }
-} else {
-  // Enable in-memory persistence by default for session continuity
-  persistence = {
-    provider: memoryPersistence,
-    bindState: async (docName, ydoc) => {
-      const persistedYdoc = await memoryPersistence.getYDoc(docName)
-      Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(persistedYdoc))
-      ydoc.on('update', update => {
-        memoryPersistence.storeUpdate(docName, update)
-      })
-    },
-    writeState: async (_docName, _ydoc) => {}
-  }
-}
 
 /**
  * @param {{bindState: function(string,WSSharedDoc):void,
@@ -226,16 +173,15 @@ export class WSSharedDoc extends Y.Doc {
  * Gets a Y.Doc by name, whether in memory or on disk
  *
  * @param {string} docname - the name of the Y.Doc to find or create
- * @param {boolean} gc - whether to allow gc on the doc (applies only when created)
+ * @param {boolean} gc - whether to allow gc on the doc (applies only when created; default: the GC env var)
  * @return {WSSharedDoc}
  */
-export const getYDoc = (docname, gc = true) => map.setIfUndefined(docs, docname, () => {
+export const getYDoc = (docname, gc = gcEnabled) => map.setIfUndefined(docs, docname, () => {
   const doc = new WSSharedDoc(docname)
   doc.gc = gc
   if (persistence !== null) {
     persistence.bindState(docname, doc)
   }
-  docs.set(docname, doc)
   return doc
 })
 
@@ -329,12 +275,14 @@ const closeConn = (doc, conn) => {
     // Clear both sub-channels, else a disconnect leaves a ghost cursor behind.
     awarenessProtocol.removeAwarenessStates(doc.awareness, Array.from(controlledIds), null)
     awarenessProtocol.removeAwarenessStates(doc.appAwareness, Array.from(controlledIds), null)
-    if (doc.conns.size === 0 && persistence !== null) {
-      // if persisted, we store state and destroy ydocument
-      persistence.writeState(doc.name, doc).then(() => {
-        doc.destroy()
-      })
+    if (doc.conns.size === 0) {
+      // last one out: drop the room (after storing it, if persisted)
       docs.delete(doc.name)
+      if (persistence !== null) {
+        persistence.writeState(doc.name, doc).then(() => doc.destroy())
+      } else {
+        doc.destroy()
+      }
     }
   }
   conn.close()
@@ -348,6 +296,7 @@ const closeConn = (doc, conn) => {
 const send = (doc, conn, m) => {
   if (conn.readyState !== wsReadyStateConnecting && conn.readyState !== wsReadyStateOpen) {
     closeConn(doc, conn)
+    return
   }
   try {
     conn.send(m, {}, err => { err != null && closeConn(doc, conn) })
@@ -363,7 +312,7 @@ const pingTimeout = 30000
  * @param {import('http').IncomingMessage} req
  * @param {any} opts
  */
-export const setupWSConnection = (conn, req, { docName = (req.url || '').slice(1).split('?')[0], gc = true } = {}) => {
+export const setupWSConnection = (conn, req, { docName = (req.url || '').slice(1).split('?')[0], gc = gcEnabled } = {}) => {
   conn.binaryType = 'arraybuffer'
   // get doc, initialize if it does not exist yet
   const doc = getYDoc(docName, gc)
@@ -375,9 +324,10 @@ export const setupWSConnection = (conn, req, { docName = (req.url || '').slice(1
   let pongReceived = true
   const pingInterval = setInterval(() => {
     if (!pongReceived) {
-      if (doc.conns.has(conn)) {
-        closeConn(doc, conn)
-      }
+      // no pong: the peer is gone, so a close handshake would only wait out
+      // its timeout. Clean up and drop the socket right away.
+      closeConn(doc, conn)
+      conn.terminate()
       clearInterval(pingInterval)
     } else if (doc.conns.has(conn)) {
       pongReceived = false

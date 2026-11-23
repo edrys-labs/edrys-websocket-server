@@ -77,6 +77,7 @@ function showHelp () {
   console.log('  HOST                        Alternative to --host')
   console.log('  SSL_KEY                     Path to SSL private key')
   console.log('  SSL_CERT                    Path to SSL certificate')
+  console.log('  YJS_MAX_PAYLOAD             Max Yjs message size in bytes (default: 100 MiB)')
   console.log(
     '  NODE_ENV                    Environment (development/production)'
   )
@@ -169,7 +170,14 @@ if (args.help) {
 }
 
 // Create WebSocket servers - one for Yjs docs, one for streaming
-const yDocWss = new WebSocket.Server({ noServer: true })
+// Max Yjs frame size. Kept at the ws default (100 MiB): a late joiner gets the
+// whole classroom doc in one frame, and modules store pasted images in it
+// (the whiteboard without a size cap), so a lower default could lock a class
+// out of the fallback. Operators can lower it with YJS_MAX_PAYLOAD.
+const yDocWss = new WebSocket.Server({
+  noServer: true,
+  maxPayload: number.parseInt(process.env.YJS_MAX_PAYLOAD || String(100 * 1024 * 1024))
+})
 const streamWss = new WebSocket.Server({
   noServer: true,
   maxPayload: 5 * 1024 * 1024 // 5MB max message size

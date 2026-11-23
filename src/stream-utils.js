@@ -4,6 +4,19 @@ const clients = new Set()
 const streamSources = new Map() // roomId -> source connection
 let frameCount = 0
 
+// A viewer with more than this queued (it reads slower than the source
+// records) is dropped instead of buffering without bound. Skipping chunks
+// would corrupt its WebM stream; dropping makes it reconnect and re-join,
+// and the source restarts with a fresh init segment.
+const MAX_VIEWER_BUFFER = 8 * 1024 * 1024
+
+// Every viewer-joined restarts the source's MediaRecorder for the whole room,
+// so they are coalesced: at most one per room per interval, plus one trailing
+// one so the last joiner still gets a fresh init segment.
+const VIEWER_JOINED_INTERVAL = 1000
+/** @type {Map<string, { last: number, timer: ReturnType<typeof setTimeout> | null }>} */
+const restartRequests = new Map()
+
 // Log throughput periodically
 const statsInterval = setInterval(() => {
   if (frameCount > 0) {
@@ -148,10 +161,42 @@ function handleJoinRoom (ws, data) {
       }))
       // Ask the source to restart its MediaRecorder so the viewer gets a fresh
       // init segment at t=0 with no timeline gap.
-      source.send(JSON.stringify({ type: 'viewer-joined', roomId }))
+      requestRestart(roomId)
     } else {
       streamSources.delete(roomId)
     }
+  }
+}
+
+/**
+ * Send viewer-joined to the room's source, throttled per room (see
+ * VIEWER_JOINED_INTERVAL).
+ * @param {string} roomId
+ */
+function requestRestart (roomId) {
+  let entry = restartRequests.get(roomId)
+  if (!entry) {
+    entry = { last: 0, timer: null }
+    restartRequests.set(roomId, entry)
+  }
+  if (entry.timer) return // a trailing one is already scheduled
+  const send = () => {
+    const source = streamSources.get(roomId)
+    if (source && source.readyState === 1) {
+      source.send(JSON.stringify({ type: 'viewer-joined', roomId }))
+    }
+  }
+  const wait = entry.last + VIEWER_JOINED_INTERVAL - Date.now()
+  if (wait <= 0) {
+    entry.last = Date.now()
+    send()
+  } else {
+    const e = entry
+    e.timer = setTimeout(() => {
+      e.timer = null
+      e.last = Date.now()
+      send()
+    }, wait)
   }
 }
 
@@ -170,6 +215,11 @@ function handleBinaryFrame (ws, chunk) {
     if (client === ws ||
         client.readyState !== 1 ||
     /** @type {any} */ (client).roomId !== roomId) {
+      return
+    }
+    if (client.bufferedAmount > MAX_VIEWER_BUFFER) {
+      console.warn(`Dropping slow stream viewer in room ${roomId} (${client.bufferedAmount} bytes queued)`)
+      client.terminate()
       return
     }
     try {
@@ -194,6 +244,9 @@ function handleDisconnect (ws) {
   if (/** @type {any} */ (ws).isSource && roomId && streamSources.get(roomId) === ws) {
     console.log(`Stream source disconnected from room: ${roomId}`)
     streamSources.delete(roomId)
+    const pending = restartRequests.get(roomId)
+    if (pending && pending.timer) clearTimeout(pending.timer)
+    restartRequests.delete(roomId)
 
     // Notify room clients that the source has disconnected
     clients.forEach((client) => {

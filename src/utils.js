@@ -396,6 +396,12 @@ export const setupWSConnection = (conn, req, { docName = (req.url || '').slice(1
   conn.on('pong', () => {
     pongReceived = true
   })
+  // Without a listener, a protocol error (malformed or oversized frame) is an
+  // unhandled 'error' event and takes the whole process down. ws closes the
+  // socket itself; 'close' then cleans up.
+  conn.on('error', err => {
+    console.error(`Yjs WebSocket error in room "${doc.name}": ${err.message}`)
+  })
   // put the following in a variables in a block so the interval handlers don't keep in in
   // scope
   {

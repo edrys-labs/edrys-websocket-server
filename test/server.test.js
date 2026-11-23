@@ -8,7 +8,7 @@ import fs from 'fs'
 import net from 'net'
 import os from 'os'
 import path from 'path'
-import { startServer, connect, get } from './helpers.js'
+import { startServer, connect, get, serverCommand } from './helpers.js'
 import { MSG_SYNC } from './protocol.js'
 
 /** @type {Awaited<ReturnType<typeof startServer>>} */
@@ -36,7 +36,8 @@ const timeout = ms => new Promise((resolve, reject) => setTimeout(() => reject(n
  * @param {number} [ms]
  */
 async function runToExit (args, ms = 3000) {
-  const child = spawn(process.execPath, [path.resolve(import.meta.dirname, '..', 'src/server.js'), ...args], { stdio: 'ignore' })
+  const [cmd, argv] = serverCommand(args)
+  const child = spawn(cmd, argv, { stdio: 'ignore' })
   try {
     return await Promise.race([exited(child), timeout(ms)])
   } finally {

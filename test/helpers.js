@@ -43,7 +43,22 @@ export function get (url) {
 }
 
 /**
- * Start `node src/server.js --port <free> --host 127.0.0.1 [...args]` and wait
+ * Command line that runs the server under test with `args`:
+ *   default                       node src/server.js
+ *   TEST_ENTRY=dist/server.cjs    node dist/server.cjs (the built bundle)
+ *   TEST_EXEC=path/to/executable  a standalone executable (build-sea.mjs)
+ *
+ * @param {string[]} args
+ * @param {string} [entry]
+ * @return {[string, string[]]}
+ */
+export function serverCommand (args, entry) {
+  if (!entry && process.env.TEST_EXEC) return [path.resolve(ROOT, process.env.TEST_EXEC), args]
+  return [process.execPath, [path.resolve(ROOT, entry || process.env.TEST_ENTRY || 'src/server.js'), ...args]]
+}
+
+/**
+ * Start the server with `--port <free> --host 127.0.0.1 [...args]` and wait
  * until it answers HTTP(S).
  *
  * @param {{ entry?: string, env?: Record<string, string>, args?: string[], cwd?: string, https?: boolean }} [opts]
@@ -51,9 +66,8 @@ export function get (url) {
 export async function startServer (opts = {}) {
   const port = await freePort()
   let output = ''
-  // TEST_ENTRY=dist/server.cjs runs the suite against the built bundle (what Docker runs)
-  const entry = path.resolve(ROOT, opts.entry || process.env.TEST_ENTRY || 'src/server.js')
-  const child = spawn(process.execPath, [entry, '--port', String(port), '--host', '127.0.0.1', ...(opts.args || [])], {
+  const [cmd, argv] = serverCommand(['--port', String(port), '--host', '127.0.0.1', ...(opts.args || [])], opts.entry)
+  const child = spawn(cmd, argv, {
     cwd: opts.cwd || ROOT,
     env: { ...process.env, NO_COLOR: '1', ...opts.env }
   })

@@ -47,3 +47,26 @@ jobs:
         run: npm test
         env:
           TEST_ENTRY: dist/server.cjs
+
+  executable:
+    # the standalone build, so a broken one shows up before a release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Build the Linux executable
+        run: node build-sea.mjs --platform linux-x64
+
+      - name: Test it
+        run: npm test
+        env:
+          TEST_EXEC: edrys-executable-linux-x64/edrys-server-linux-x64

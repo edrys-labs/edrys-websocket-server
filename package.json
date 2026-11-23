@@ -9,7 +9,8 @@
     "lint": "standard && tsc",
     "test": "node --test --test-timeout=30000 test/*.test.js",
     "prepublishOnly": "npm run dist",
-    "preversion": "npm run lint && npm test && npm run dist && test -e dist/src/server.d.ts && test -e dist/server.cjs"
+    "preversion": "npm run lint && npm test && npm run dist && test -e dist/src/server.d.ts && test -e dist/server.cjs",
+    "build:sea": "node build-sea.mjs"
   },
   "bin": {
     "edrys-websocket-server": "src/server.js"
@@ -24,15 +25,15 @@
   "exports": {
     "./package.json": "./package.json",
     "./utils": {
+      "types": "./dist/src/utils.d.ts",
       "import": "./src/utils.js",
       "require": "./dist/utils.cjs",
-      "types": "./dist/src/utils.d.ts",
       "default": "./src/utils.js"
     },
     "./callback": {
+      "types": "./dist/src/callback.d.ts",
       "import": "./src/callback.js",
       "require": "./dist/callback.cjs",
-      "types": "./dist/src/callback.d.ts",
       "default": "./src/callback.js"
     }
   },
@@ -71,6 +72,7 @@
   "devDependencies": {
     "@types/node": "^18.19.86",
     "@types/ws": "^8.5.10",
+    "esbuild": "^0.28.2",
     "rollup": "^4.40.0",
     "standard": "^17.1.2",
     "typescript": "^4.9.5",

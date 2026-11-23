@@ -219,44 +219,40 @@ Self-signed certificates will be saved in the `./certs/` directory and reused on
 
 ### Standalone Executable
 
-Pre-built standalone executables for Linux, macOS, and Windows are available on the [GitHub Releases](../../releases) page. They include all dependencies and do not require Node.js on the target machine.
+Pre-built standalone executables for Linux, macOS and Windows are on the [GitHub Releases](../../releases) page. They embed Node.js, so the target machine needs no Node.js installation.
 
-To build the executables yourself:
+| Zip | Platform | Executable |
+|-----|----------|------------|
+| `edrys-server-linux-x64.zip` | Linux x64 | `edrys-server-linux-x64` |
+| `edrys-server-linux-arm64.zip` | Linux arm64 (e.g. Raspberry Pi 4/5, 64-bit OS) | `edrys-server-linux-arm64` |
+| `edrys-server-macos-arm64.zip` | macOS, Apple Silicon | `edrys-server-macos-arm64` |
+| `edrys-server-macos-x64.zip` | macOS, Intel | `edrys-server-macos-x64` |
+| `edrys-server-win-x64.zip` | Windows x64 | `edrys-server-win-x64.exe` |
 
-```bash
-# Build for the current platform only
-./build-sea.sh
-
-# Build for all platforms (Linux x64, macOS x64, Windows x64)
-./build-sea.sh --all
-```
-
-This produces three distribution folders:
-
-| Folder | Platform | Executable |
-|--------|----------|------------|
-| `edrys-executable-linux-x64/` | Linux x64 | `edrys-server-linux-x64` |
-| `edrys-executable-darwin-x64/` | macOS x64 | `edrys-server-macos-x64` |
-| `edrys-executable-win-x64/` | Windows x64 | `edrys-server-win-x64.exe` |
-
-Each folder also contains a ready-to-use startup script (`start-server.sh` / `start-server.bat`).
+Each zip holds one folder with the executable, a start script (`start-server.sh` / `start-server.bat`, port 3210) and a `README.txt`. The executables take the same options as `node src/server.js`.
 
 ```bash
-# Run directly (Linux/macOS)
 cd edrys-executable-linux-x64
-./edrys-server-linux-x64 --port 3210
-
-# Or use the startup script
-./start-server.sh
+./start-server.sh                        # or: ./edrys-server-linux-x64 --port 3210
 ```
 
-The standalone executable supports all the same command-line options as the Node.js version.
+The macOS executables are signed ad hoc but not notarized: on first start, right-click the executable and choose *Open*, or run `xattr -d com.apple.quarantine edrys-server-macos-*`.
+
+To build them yourself (Node.js 20+; downloads the official Node.js binaries and checks them against the release's `SHASUMS256.txt`):
+
+```bash
+npm run build:sea                        # this platform
+npm run build:sea -- --all               # all five
+npm run build:sea -- --platform win-x64  # one or more
+```
+
+The output goes to `edrys-executable-<platform>/`. Windows and Linux executables can be built on any OS; macOS executables have to be built on macOS, because they must be signed with `codesign` to start there. The embedded Node.js version is `NODE_VERSION` in [`build-sea.mjs`](build-sea.mjs). `TEST_EXEC=edrys-executable-linux-x64/edrys-server-linux-x64 npm test` runs the test suite against an executable.
 
 > **Note:** The `--ssl` / `--https` flag requires **OpenSSL** to be installed on the target machine (used to generate self-signed certificates). On Linux install it with `sudo apt-get install openssl`, on macOS with `brew install openssl`. If you already have certificate files, you can skip this requirement by passing `--ssl-key` and `--ssl-cert` directly.
 
 ## Releasing
 
-`npm version <version>` and `git push --follow-tags` on `main`. The tag (without a `v`) starts two workflows: [`publish.yml`](.github/workflows/publish.yml) checks that it matches `package.json`, builds `dist/` and publishes to npm (a pre-release version like `1.2.0-dev.0` under the `next` tag, any other under `latest`); [`release.yml`](.github/workflows/release.yml) builds the standalone executables and creates the GitHub release.
+`npm version <version>` and `git push --follow-tags` on `main`. The tag (without a `v`) starts two workflows: [`publish.yml`](.github/workflows/publish.yml) checks that it matches `package.json`, builds `dist/` and publishes to npm (a pre-release version like `1.2.0-dev.0` under the `next` tag, any other under `latest`); [`release.yml`](.github/workflows/release.yml) builds the standalone executables (macOS ones on a macOS runner), runs the test suite against them and creates the GitHub release.
 
 ## License
 

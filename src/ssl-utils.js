@@ -1,7 +1,15 @@
 // SSL/TLS utility functions for HTTPS/WSS support
 import fs from 'fs'
 import path from 'path'
-import { execSync } from 'child_process'
+import crypto from 'crypto'
+import { execFileSync } from 'child_process'
+
+// Subject of the certificates this server makes; used to tell them apart
+// from certificates someone put into certs/ themselves.
+const SUBJECT = '/C=US/ST=Local/L=Local/O=Edrys/OU=WebSocket/CN=localhost'
+const DAYS = 365
+// Renew a self-signed certificate this long before it expires.
+const RENEW_BEFORE_MS = 30 * 24 * 3600 * 1000
 
 /**
  * Generate a self-signed certificate for development/testing
@@ -16,13 +24,23 @@ export function generateSelfSignedCert (certDir = './certs') {
   const keyPath = path.join(certDir, 'server-key.pem')
   const certPath = path.join(certDir, 'server-cert.pem')
 
-  // Check if certificates already exist
   if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
-    console.log('🔒 Using existing self-signed certificates')
-    return { keyPath, certPath }
+    const cert = readCert(certPath)
+    const validTo = cert ? new Date(cert.validTo) : null
+    if (!cert || !validTo || validTo.getTime() - Date.now() > RENEW_BEFORE_MS) {
+      console.log('🔒 Using existing certificates in ' + certDir)
+      return { keyPath, certPath }
+    }
+    const when = `${validTo.getTime() < Date.now() ? 'expired' : 'expires'} on ${validTo.toISOString().slice(0, 10)}`
+    if (!isOurs(cert)) {
+      // someone else's certificate: never overwrite it
+      console.warn(`⚠️  The certificate in ${certPath} ${when}. It was not created by this server, so it is not renewed: replace it.`)
+      return { keyPath, certPath }
+    }
+    console.log(`🔁 Renewing the self-signed certificate (it ${when})...`)
+  } else {
+    console.log('🔐 Generating self-signed SSL certificate...')
   }
-
-  console.log('🔐 Generating self-signed SSL certificate...')
 
   try {
     // Try to use OpenSSL if available
@@ -55,12 +73,40 @@ export function generateSelfSignedCert (certDir = './certs') {
 }
 
 /**
- * Create certificates using OpenSSL
+ * @param {string} certPath
+ * @return {crypto.X509Certificate|null}
+ */
+function readCert (certPath) {
+  try {
+    return new crypto.X509Certificate(fs.readFileSync(certPath))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether this server created the certificate (self-signed, our subject).
+ * @param {crypto.X509Certificate} cert
+ */
+function isOurs (cert) {
+  const fields = SUBJECT.split('/').filter(Boolean)
+  return cert.subject === cert.issuer && fields.every(f => cert.subject.split('\n').includes(f))
+}
+
+/**
+ * Create a self-signed certificate with OpenSSL (no shell involved).
+ * @param {string} keyPath
+ * @param {string} certPath
  */
 function createWithOpenSSL (keyPath, certPath) {
-  // Create a more comprehensive certificate with SAN fields for better browser compatibility
-  const opensslCmd = `openssl req -nodes -new -x509 -keyout "${keyPath}" -out "${certPath}" -days 365 -subj "/C=US/ST=Local/L=Local/O=Edrys/OU=WebSocket/CN=localhost" -addext "subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1,IP:0.0.0.0"`
-  execSync(opensslCmd, { stdio: 'pipe' })
+  execFileSync('openssl', [
+    'req', '-nodes', '-new', '-x509',
+    '-keyout', keyPath, '-out', certPath,
+    '-days', String(DAYS),
+    '-subj', SUBJECT,
+    // SANs so browsers accept it for localhost once the warning is clicked away
+    '-addext', 'subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1'
+  ], { stdio: 'pipe' })
 }
 
 /**

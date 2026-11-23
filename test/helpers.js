@@ -3,6 +3,8 @@
 // WebSockets.
 
 import { spawn } from 'child_process'
+import http from 'http'
+import https from 'https'
 import net from 'net'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -24,28 +26,46 @@ const freePort = () => new Promise((resolve, reject) => {
 const sleep = (/** @type {number} */ ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
- * Start `node src/server.js --port <free> --host 127.0.0.1` and wait until it
- * answers HTTP.
+ * GET / over http or https (self-signed certificates accepted).
  *
- * @param {{ entry?: string, env?: Record<string, string> }} [opts]
+ * @param {string} url
+ * @return {Promise<{ status: number, body: string }>}
+ */
+export function get (url) {
+  const lib = url.startsWith('https:') ? https : http
+  return new Promise((resolve, reject) => {
+    lib.get(url, { rejectUnauthorized: false }, res => {
+      let body = ''
+      res.on('data', d => { body += d })
+      res.on('end', () => resolve({ status: res.statusCode || 0, body }))
+    }).on('error', reject)
+  })
+}
+
+/**
+ * Start `node src/server.js --port <free> --host 127.0.0.1 [...args]` and wait
+ * until it answers HTTP(S).
+ *
+ * @param {{ entry?: string, env?: Record<string, string>, args?: string[], cwd?: string, https?: boolean }} [opts]
  */
 export async function startServer (opts = {}) {
   const port = await freePort()
   let output = ''
   // TEST_ENTRY=dist/server.cjs runs the suite against the built bundle (what Docker runs)
-  const entry = opts.entry || process.env.TEST_ENTRY || 'src/server.js'
-  const child = spawn(process.execPath, [entry, '--port', String(port), '--host', '127.0.0.1'], {
-    cwd: ROOT,
+  const entry = path.resolve(ROOT, opts.entry || process.env.TEST_ENTRY || 'src/server.js')
+  const child = spawn(process.execPath, [entry, '--port', String(port), '--host', '127.0.0.1', ...(opts.args || [])], {
+    cwd: opts.cwd || ROOT,
     env: { ...process.env, NO_COLOR: '1', ...opts.env }
   })
   child.stdout.on('data', d => { output += d })
   child.stderr.on('data', d => { output += d })
+  const base = `${opts.https ? 'https' : 'http'}://127.0.0.1:${port}`
 
   const deadline = Date.now() + 10000
   for (;;) {
     if (child.exitCode !== null) throw new Error(`server exited (${child.exitCode}):\n${output}`)
     try {
-      await fetch(`http://127.0.0.1:${port}/`)
+      await get(`${base}/`)
       break
     } catch {}
     if (Date.now() > deadline) {
@@ -57,8 +77,10 @@ export async function startServer (opts = {}) {
 
   return {
     port,
+    child,
+    base,
     /** @param {string} p */
-    url: p => `ws://127.0.0.1:${port}${p}`,
+    url: p => `${opts.https ? 'wss' : 'ws'}://127.0.0.1:${port}${p}`,
     log: () => output,
     stop: async () => {
       if (child.exitCode !== null) return
@@ -150,7 +172,8 @@ export class Client {
  */
 export function connect (url) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url)
+    // self-signed certificates are fine for wss:// in tests
+    const ws = new WebSocket(url, { rejectUnauthorized: false })
     ws.binaryType = 'arraybuffer'
     // attach the queue before 'open' so nothing sent on connect is lost
     const client = new Client(ws)

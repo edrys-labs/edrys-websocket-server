@@ -8,6 +8,7 @@ var number = require('lib0/number');
 var utils = require('./utils.cjs');
 var fs = require('fs');
 var path = require('path');
+var crypto = require('crypto');
 var child_process = require('child_process');
 var os = require('os');
 require('yjs');
@@ -38,10 +39,18 @@ function _interopNamespaceDefault(e) {
 
 var number__namespace = /*#__PURE__*/_interopNamespaceDefault(number);
 
-// Store active connections
+// Video relay on /stream: a source (the station) registers for a room and
+// sends MediaRecorder chunks; viewers join the room and get them verbatim.
+//
+//   source → { type: 'register-source', roomId, mimeType }  ← source-registered
+//   viewer → { type: 'join-room', roomId }                   ← source-available
+//   server → source { type: 'viewer-joined' }   (restart: fresh init segment)
+//   server → viewers { type: 'source-disconnected' }
+
+/** @type {Set<any>} every connected stream socket */
 const clients = new Set();
-// Store active stream sources
-const streamSources = new Map(); // roomId -> source connection
+/** @type {Map<string, any>} roomId -> source socket */
+const streamSources = new Map();
 let frameCount = 0;
 
 // A viewer with more than this queued (it reads slower than the source
@@ -57,88 +66,93 @@ const VIEWER_JOINED_INTERVAL = 1000;
 /** @type {Map<string, { last: number, timer: ReturnType<typeof setTimeout> | null }>} */
 const restartRequests = new Map();
 
-// Log throughput periodically
-const statsInterval = setInterval(() => {
+const STATS_INTERVAL = 60000;
+setInterval(() => {
   if (frameCount > 0) {
-    console.log(`Streaming at ${frameCount / 5} chunks/s, ${clients.size} clients connected, ${streamSources.size} active sources`);
+    console.log(`Streaming: ${(frameCount * 1000 / STATS_INTERVAL).toFixed(1)} chunks/s, ${clients.size} clients, ${streamSources.size} sources`);
     frameCount = 0;
   }
-}, 5000);
+}, STATS_INTERVAL).unref();
 
 /**
- * Sets up a WebSocket connection for streaming
- * @param {import('ws').WebSocket} ws - WebSocket connection
- * @param {import('http').IncomingMessage} req - HTTP request
+ * @param {any} ws
+ * @param {object} msg
  */
-const setupStreamConnection = (ws, req) => {
-  clients.add(ws);
-  console.log(`Stream client connected (total=${clients.size}, sources=${streamSources.size})`);
+const sendJSON = (ws, msg) => {
+  if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+};
 
-  /** @type {any} */ (ws).isAlive = true;
-
-  // Handle messages from clients
-  ws.on('message', (message) => {
-    try {
-      // Any inbound traffic proves the socket is alive.
-      /** @type {any} */ (ws).isAlive = true;
-
-      // Binary = media chunk (Buffer); string = JSON control message.
-      if (typeof message !== 'string') {
-        if (/** @type {any} */ (ws).isSource) handleBinaryFrame(ws, message);
-        return
-      }
-
-      let data;
-      try {
-        data = JSON.parse(message);
-      } catch (e) {
-        console.error('Failed to parse message as JSON:', e);
-        return
-      }
-
-      if (data.type === 'register-source') {
-        handleRegisterSource(ws, data);
-      } else if (data.type === 'join-room') {
-        handleJoinRoom(ws, data);
-      }
-    } catch (error) {
-      console.error('Error processing message:', error);
-    }
-  });
-
-  // Handle client disconnect
-  ws.on('close', () => {
-    handleDisconnect(ws);
-  });
-
-  // Handle errors
-  ws.on('error', (error) => {
-    console.error('WebSocket error:', error);
-    handleDisconnect(ws);
-  });
-
-  // Set up ping/pong for connection health
-  ws.on('pong', () => {
-    /** @type {any} */ (ws).isAlive = true;
+/**
+ * @param {string} roomId
+ * @param {object} msg
+ * @param {any} [except]
+ */
+const toRoom = (roomId, msg, except) => {
+  clients.forEach(client => {
+    if (client !== except && client.roomId === roomId) sendJSON(client, msg);
   });
 };
 
 /**
- * Handle source registration
- * @param {import('ws').WebSocket} ws
+ * Sets up a WebSocket connection for streaming
+ * @param {import('ws').WebSocket} socket
+ */
+const setupStreamConnection = (socket) => {
+  const ws = /** @type {any} */ (socket);
+  clients.add(ws);
+  ws.isAlive = true;
+
+  ws.on('message', (/** @type {any} */ message) => {
+    // Any inbound traffic proves the socket is alive.
+    ws.isAlive = true;
+
+    // Binary = media chunk (Buffer); string = JSON control message (ws 6).
+    if (typeof message !== 'string') {
+      if (ws.isSource) {
+        try {
+          handleBinaryFrame(ws, message);
+        } catch (err) {
+          console.error(`Stream relay error: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      return
+    }
+
+    try {
+      const data = JSON.parse(message);
+      if (data === null || typeof data !== 'object') return
+      if (data.type === 'register-source') handleRegisterSource(ws, data);
+      else if (data.type === 'join-room') handleJoinRoom(ws, data);
+    } catch (err) {
+      // bad JSON, or a send that threw: never let it escape the listener
+      console.error(`Stream message error: ${err instanceof Error ? err.message : err}`);
+    }
+  });
+
+  // 'close' always follows 'error', so cleanup happens there only.
+  ws.on('close', () => {
+    clients.delete(ws);
+    releaseSource(ws);
+  });
+  ws.on('error', (/** @type {Error} */ err) => {
+    console.error(`Stream WebSocket error: ${err.message}`);
+  });
+  ws.on('pong', () => { ws.isAlive = true; });
+};
+
+/**
+ * @param {any} ws
  * @param {any} data
  */
 function handleRegisterSource (ws, data) {
-  // Require a roomId for registration
   if (!data.roomId) {
-    ws.send(JSON.stringify({
-      type: 'error',
-      message: 'Room ID is required to register as source'
-    }));
+    sendJSON(ws, { type: 'error', message: 'Room ID is required to register as source' });
     return
   }
-
   const roomId = data.roomId;
+
+  // Moving to another room: the old room no longer has this source.
+  if (ws.roomId !== roomId) releaseSource(ws);
 
   // Last-writer-wins: a station that reconnects while its old socket still
   // lingers (network blip, fast reload) must take over, or it would record
@@ -150,62 +164,43 @@ function handleRegisterSource (ws, data) {
     existing.terminate();
   }
 
-  // Register this client as the source for the room. Re-registration by the
-  // same socket just updates the mimeType (e.g. audio track toggled).
-  /** @type {any} */ (ws).isSource = true;
-  /** @type {any} */ (ws).roomId = roomId;
-  /** @type {any} */ (ws).mimeType = data.mimeType;
+  // Re-registration by the same socket just updates the mimeType (e.g. audio
+  // track toggled).
+  ws.isSource = true;
+  ws.roomId = roomId;
+  ws.mimeType = data.mimeType;
   streamSources.set(roomId, ws);
   console.log(`Stream source registered for room: ${roomId} (${data.mimeType})`);
 
-  // Confirm successful registration
-  ws.send(JSON.stringify({ type: 'source-registered', roomId }));
-
-  // Notify all clients in the same room that a source is available
-  clients.forEach((client) => {
-    if (client !== ws &&
-        client.readyState === 1 &&
-    /** @type {any} */ (client).roomId === roomId) {
-      client.send(JSON.stringify({ type: 'source-available', roomId, mimeType: data.mimeType }));
-    }
-  });
+  sendJSON(ws, { type: 'source-registered', roomId });
+  toRoom(roomId, { type: 'source-available', roomId, mimeType: data.mimeType }, ws);
 }
 
 /**
- * Handle room joining
- * @param {import('ws').WebSocket} ws
+ * @param {any} ws
  * @param {any} data
  */
 function handleJoinRoom (ws, data) {
-  // Client wants to join a specific room
   const roomId = data.roomId;
   if (!roomId) {
-    ws.send(JSON.stringify({
-      type: 'error',
-      message: 'Room ID is required to join a room'
-    }));
+    sendJSON(ws, { type: 'error', message: 'Room ID is required to join a room' });
     return
   }
 
-  /** @type {any} */ (ws).roomId = roomId;
-  console.log(`Client joined room: ${roomId}`);
+  // a source that joins another room as a viewer stops being its room's source
+  if (ws.roomId !== roomId) releaseSource(ws);
+  ws.roomId = roomId;
 
-  // Notify the client if this room has a source
-  if (streamSources.has(roomId)) {
-    const source = streamSources.get(roomId);
-    if (source.readyState === 1) {
-      ws.send(JSON.stringify({
-        type: 'source-available',
-        roomId,
-        mimeType: /** @type {any} */ (source).mimeType
-      }));
-      // Ask the source to restart its MediaRecorder so the viewer gets a fresh
-      // init segment at t=0 with no timeline gap.
-      requestRestart(roomId);
-    } else {
-      streamSources.delete(roomId);
-    }
+  const source = streamSources.get(roomId);
+  if (!source) return
+  if (source.readyState !== 1) {
+    streamSources.delete(roomId);
+    return
   }
+  sendJSON(ws, { type: 'source-available', roomId, mimeType: source.mimeType });
+  // Ask the source to restart its MediaRecorder so the viewer gets a fresh
+  // init segment at t=0 with no timeline gap.
+  requestRestart(roomId);
 }
 
 /**
@@ -220,121 +215,90 @@ function requestRestart (roomId) {
     restartRequests.set(roomId, entry);
   }
   if (entry.timer) return // a trailing one is already scheduled
+  const e = entry;
   const send = () => {
+    e.last = Date.now();
     const source = streamSources.get(roomId);
-    if (source && source.readyState === 1) {
-      source.send(JSON.stringify({ type: 'viewer-joined', roomId }));
-    }
+    if (source) sendJSON(source, { type: 'viewer-joined', roomId });
   };
-  const wait = entry.last + VIEWER_JOINED_INTERVAL - Date.now();
+  const wait = e.last + VIEWER_JOINED_INTERVAL - Date.now();
   if (wait <= 0) {
-    entry.last = Date.now();
     send();
   } else {
-    const e = entry;
     e.timer = setTimeout(() => {
       e.timer = null;
-      e.last = Date.now();
       send();
     }, wait);
   }
 }
 
 /**
- * Relay a binary media chunk to all clients in the source's room.
- * @param {import('ws').WebSocket} ws
- * @param {any} chunk
+ * Relay a binary media chunk to all viewers in the source's room.
+ * @param {any} ws
+ * @param {Buffer} chunk
  */
 function handleBinaryFrame (ws, chunk) {
-  const roomId = /** @type {any} */ (ws).roomId;
+  const roomId = ws.roomId;
   if (!roomId) return
-
   frameCount++;
 
-  clients.forEach((client) => {
-    if (client === ws ||
-        client.readyState !== 1 ||
-    /** @type {any} */ (client).roomId !== roomId) {
-      return
-    }
+  clients.forEach(client => {
+    if (client === ws || client.readyState !== 1 || client.roomId !== roomId) return
     if (client.bufferedAmount > MAX_VIEWER_BUFFER) {
       console.warn(`Dropping slow stream viewer in room ${roomId} (${client.bufferedAmount} bytes queued)`);
       client.terminate();
       return
     }
-    try {
-      client.send(chunk, { binary: true });
-    } catch (error) {
-      console.error('Error sending to client:', error);
-    }
+    client.send(chunk, { binary: true });
   });
 }
 
 /**
- * Handle client disconnection
- * @param {import('ws').WebSocket} ws
+ * If `ws` is the registered source of its room, unregister it and tell the
+ * room. A no-op when the map already points at another socket (takeover).
+ * @param {any} ws
  */
-function handleDisconnect (ws) {
-  clients.delete(ws);
-  console.log(`[ws] disconnect isSource=${!!(/** @type {any} */ (ws).isSource)} room=${/** @type {any} */ (ws).roomId} → clients=${clients.size} sources=${streamSources.size}`);
-
-  // If this was a stream source, remove it ONLY if the map still points to this
-  // exact socket.
-  const roomId = /** @type {any} */ (ws).roomId;
-  if (/** @type {any} */ (ws).isSource && roomId && streamSources.get(roomId) === ws) {
-    console.log(`Stream source disconnected from room: ${roomId}`);
-    streamSources.delete(roomId);
-    const pending = restartRequests.get(roomId);
-    if (pending && pending.timer) clearTimeout(pending.timer);
-    restartRequests.delete(roomId);
-
-    // Notify room clients that the source has disconnected
-    clients.forEach((client) => {
-      if (client.readyState === 1 && /** @type {any} */ (client).roomId === roomId) {
-        client.send(JSON.stringify({
-          type: 'source-disconnected',
-          roomId
-        }));
-      }
-    });
-  }
+function releaseSource (ws) {
+  const roomId = ws.roomId;
+  if (!ws.isSource || !roomId || streamSources.get(roomId) !== ws) return
+  console.log(`Stream source left room: ${roomId}`);
+  streamSources.delete(roomId);
+  ws.isSource = false;
+  const pending = restartRequests.get(roomId);
+  if (pending && pending.timer) clearTimeout(pending.timer);
+  restartRequests.delete(roomId);
+  toRoom(roomId, { type: 'source-disconnected', roomId }, ws);
 }
 
 /**
- * Set up heartbeat system for stream clients
- * @param {import('ws').Server} wss - WebSocket server
+ * Ping every stream socket each 5 s; one that did not answer since the last
+ * ping is terminated ('close' then cleans up).
  */
-const setupStreamHeartbeat = (wss) => {
-  const pingInterval = setInterval(() => {
-    clients.forEach((ws) => {
+const setupStreamHeartbeat = () => {
+  return setInterval(() => {
+    clients.forEach(ws => {
       if (ws.isAlive === false) {
-        handleDisconnect(ws);
-        return ws.terminate()
+        ws.terminate();
+        return
       }
-
       ws.isAlive = false;
-
       try {
         ws.ping();
-      } catch (e) {
-        // Client might be dead
-        console.error('Failed to ping stream client', e);
-        handleDisconnect(ws);
+      } catch {
+        ws.terminate();
       }
     });
-  }, 5000);
-
-  return pingInterval
-};
-
-/**
- * Clean up resources
- */
-const cleanup = () => {
-  clearInterval(statsInterval);
+  }, 5000)
 };
 
 // SSL/TLS utility functions for HTTPS/WSS support
+
+// Subject of the certificates this server makes; used to tell them apart
+// from certificates someone put into certs/ themselves.
+const SUBJECT = '/C=US/ST=Local/L=Local/O=Edrys/OU=WebSocket/CN=localhost';
+const DAYS = 365;
+// Renew a self-signed certificate this long before it expires.
+const RENEW_BEFORE_MS = 30 * 24 * 3600 * 1000;
 
 /**
  * Generate a self-signed certificate for development/testing
@@ -349,13 +313,23 @@ function generateSelfSignedCert (certDir = './certs') {
   const keyPath = path.join(certDir, 'server-key.pem');
   const certPath = path.join(certDir, 'server-cert.pem');
 
-  // Check if certificates already exist
   if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
-    console.log('🔒 Using existing self-signed certificates');
-    return { keyPath, certPath }
+    const cert = readCert(certPath);
+    const validTo = cert ? new Date(cert.validTo) : null;
+    if (!cert || !validTo || validTo.getTime() - Date.now() > RENEW_BEFORE_MS) {
+      console.log('🔒 Using existing certificates in ' + certDir);
+      return { keyPath, certPath }
+    }
+    const when = `${validTo.getTime() < Date.now() ? 'expired' : 'expires'} on ${validTo.toISOString().slice(0, 10)}`;
+    if (!isOurs(cert)) {
+      // someone else's certificate: never overwrite it
+      console.warn(`⚠️  The certificate in ${certPath} ${when}. It was not created by this server, so it is not renewed: replace it.`);
+      return { keyPath, certPath }
+    }
+    console.log(`🔁 Renewing the self-signed certificate (it ${when})...`);
+  } else {
+    console.log('🔐 Generating self-signed SSL certificate...');
   }
-
-  console.log('🔐 Generating self-signed SSL certificate...');
 
   try {
     // Try to use OpenSSL if available
@@ -388,12 +362,40 @@ function generateSelfSignedCert (certDir = './certs') {
 }
 
 /**
- * Create certificates using OpenSSL
+ * @param {string} certPath
+ * @return {crypto.X509Certificate|null}
+ */
+function readCert (certPath) {
+  try {
+    return new crypto.X509Certificate(fs.readFileSync(certPath))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether this server created the certificate (self-signed, our subject).
+ * @param {crypto.X509Certificate} cert
+ */
+function isOurs (cert) {
+  const fields = SUBJECT.split('/').filter(Boolean);
+  return cert.subject === cert.issuer && fields.every(f => cert.subject.split('\n').includes(f))
+}
+
+/**
+ * Create a self-signed certificate with OpenSSL (no shell involved).
+ * @param {string} keyPath
+ * @param {string} certPath
  */
 function createWithOpenSSL (keyPath, certPath) {
-  // Create a more comprehensive certificate with SAN fields for better browser compatibility
-  const opensslCmd = `openssl req -nodes -new -x509 -keyout "${keyPath}" -out "${certPath}" -days 365 -subj "/C=US/ST=Local/L=Local/O=Edrys/OU=WebSocket/CN=localhost" -addext "subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1,IP:0.0.0.0"`;
-  child_process.execSync(opensslCmd, { stdio: 'pipe' });
+  child_process.execFileSync('openssl', [
+    'req', '-nodes', '-new', '-x509',
+    '-keyout', keyPath, '-out', certPath,
+    '-days', String(DAYS),
+    '-subj', SUBJECT,
+    // SANs so browsers accept it for localhost once the warning is clicked away
+    '-addext', 'subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1'
+  ], { stdio: 'pipe' });
 }
 
 /**
@@ -429,30 +431,19 @@ function validateSSLCertificates (keyPath, certPath) {
   }
 }
 
-// ANSI color codes for terminal output
-const colors = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  underscore: '\x1b[4m',
-  black: '\x1b[30m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  bgGreen: '\x1b[42m'};
+// ANSI colors, only on a terminal and not with NO_COLOR (https://no-color.org)
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+/** @param {...string} codes */
+const paint = (...codes) => (/** @type {string} */ text) =>
+  useColor ? `\x1b[${codes.join(';')}m${text}\x1b[0m` : text;
 
-// Helper functions for colored output
-const info = (text) => `${colors.cyan}${text}${colors.reset}`;
-const success = (text) => `${colors.green}${text}${colors.reset}`;
-const warning = (text) => `${colors.yellow}${text}${colors.reset}`;
-const error = (text) => `${colors.red}${text}${colors.reset}`;
-const header = (text) =>
-  `${colors.bright}${colors.magenta}${text}${colors.reset}`;
-const highlight = (text) =>
-  `${colors.bgGreen}${colors.black}${colors.bright}${text}${colors.reset}`;
-const urlText = (text) =>
-  `${colors.underscore}${colors.green}${text}${colors.reset}`;
+const info = paint('36'); // cyan
+const success = paint('32'); // green
+const warning = paint('33'); // yellow
+const error = paint('31'); // red
+const header = paint('1', '35'); // bright magenta
+const highlight = paint('42', '30', '1'); // bright black on green
+const urlText = paint('4', '32'); // underlined green
 
 // Display help information
 function showHelp () {
@@ -617,19 +608,10 @@ if (args.ssl) {
   }
 }
 
-// Create HTTP server with CORS headers
-const requestHandler = (request, response) => {
-  response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (request.method === 'OPTIONS') {
-    response.writeHead(204);
-    response.end();
-    return
-  }
-
-  response.writeHead(200, { 'Content-Type': 'text/plain' });
+// Plain HTTP answers a health check (readable from any origin)
+/** @type {http.RequestListener} */
+const requestHandler = (_request, response) => {
+  response.writeHead(200, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
   response.end('okay');
 };
 
@@ -643,25 +625,24 @@ yDocWss.on('connection', utils.setupWSConnection);
 streamWss.on('connection', setupStreamConnection);
 
 // Set up stream heartbeat system (for video streaming)
-const heartbeatInterval = setupStreamHeartbeat();
+setupStreamHeartbeat();
 
-// Handle WebSocket upgrades with routing based on path
+// Route WebSocket upgrades: /stream (and /stream/...) is the video relay,
+// every other path is a Yjs room named after it.
 server.on('upgrade', (request, socket, head) => {
-  const pathname = new URL(request.url || '/', 'http://localhost').pathname;
-
-  // Route WebSocket connections based on path
-  if (pathname && pathname.startsWith('/stream')) {
-    streamWss.handleUpgrade(request, socket, head, (ws) => {
-      console.log(`${success('Stream WebSocket connection established')}`);
-      streamWss.emit('connection', ws, request);
-    });
-  } else {
-    // Default to Yjs WebSocket connections
-    yDocWss.handleUpgrade(request, socket, head, (ws) => {
-      console.log(`${success('Yjs WebSocket connection established')}`);
-      yDocWss.emit('connection', ws, request);
-    });
+  let pathname;
+  try {
+    pathname = new URL(request.url || '/', 'http://localhost').pathname;
+  } catch {
+    // a malformed request target (e.g. "http://[") must not throw out of here
+    socket.destroy();
+    return
   }
+
+  const wss = pathname === '/stream' || pathname.startsWith('/stream/') ? streamWss : yDocWss;
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
 });
 
 server.listen(port, host, () => {
@@ -723,9 +704,11 @@ server.listen(port, host, () => {
   console.log(`${header('==============================')}\n`);
 });
 
-// Add error handlers
+// A server error is fatal (e.g. the port is in use): exit instead of staying
+// alive without listening.
 server.on('error', (err) => {
   console.error(`${error('Server error:')} ${err}`);
+  process.exit(1);
 });
 
 yDocWss.on('error', (err) => {
@@ -736,14 +719,12 @@ streamWss.on('error', (err) => {
   console.error(`${error('Stream WebSocket server error:')} ${err}`);
 });
 
-// Cleanup on server shutdown
-process.on('SIGINT', () => {
-  console.log(`\n${info('Server shutting down...')}`);
-  cleanup();
-  clearInterval(heartbeatInterval);
-  yDocWss.close();
-  streamWss.close();
-  server.close();
-  process.exit(0);
-});
+// Exit on Ctrl+C and on SIGTERM (docker stop, Heroku). Clients reconnect on
+// their own. As PID 1 in a container, node ignores SIGTERM without a handler.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    console.log(`\n${info(`${signal}: server shutting down...`)}`);
+    process.exit(0);
+  });
+}
 //# sourceMappingURL=server.cjs.map

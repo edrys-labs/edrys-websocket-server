@@ -5,50 +5,23 @@ import http from 'http'
 import https from 'https'
 import * as number from 'lib0/number'
 import { setupWSConnection } from './utils.js'
-import { setupStreamConnection, setupStreamHeartbeat, cleanup } from './stream-utils.js'
+import { setupStreamConnection, setupStreamHeartbeat } from './stream-utils.js'
 import { generateSelfSignedCert, loadSSLCertificates, validateSSLCertificates } from './ssl-utils.js'
 import os from 'os'
 
-// ANSI color codes for terminal output
-const colors = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  dim: '\x1b[2m',
-  underscore: '\x1b[4m',
-  blink: '\x1b[5m',
-  reverse: '\x1b[7m',
-  hidden: '\x1b[8m',
+// ANSI colors, only on a terminal and not with NO_COLOR (https://no-color.org)
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR
+/** @param {...string} codes */
+const paint = (...codes) => (/** @type {string} */ text) =>
+  useColor ? `\x1b[${codes.join(';')}m${text}\x1b[0m` : text
 
-  black: '\x1b[30m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  white: '\x1b[37m',
-
-  bgBlack: '\x1b[40m',
-  bgRed: '\x1b[41m',
-  bgGreen: '\x1b[42m',
-  bgYellow: '\x1b[43m',
-  bgBlue: '\x1b[44m',
-  bgMagenta: '\x1b[45m',
-  bgCyan: '\x1b[46m',
-  bgWhite: '\x1b[47m'
-}
-
-// Helper functions for colored output
-const info = (text) => `${colors.cyan}${text}${colors.reset}`
-const success = (text) => `${colors.green}${text}${colors.reset}`
-const warning = (text) => `${colors.yellow}${text}${colors.reset}`
-const error = (text) => `${colors.red}${text}${colors.reset}`
-const header = (text) =>
-  `${colors.bright}${colors.magenta}${text}${colors.reset}`
-const highlight = (text) =>
-  `${colors.bgGreen}${colors.black}${colors.bright}${text}${colors.reset}`
-const urlText = (text) =>
-  `${colors.underscore}${colors.green}${text}${colors.reset}`
+const info = paint('36') // cyan
+const success = paint('32') // green
+const warning = paint('33') // yellow
+const error = paint('31') // red
+const header = paint('1', '35') // bright magenta
+const highlight = paint('42', '30', '1') // bright black on green
+const urlText = paint('4', '32') // underlined green
 
 // Display help information
 function showHelp () {
@@ -213,19 +186,10 @@ if (args.ssl) {
   }
 }
 
-// Create HTTP server with CORS headers
-const requestHandler = (request, response) => {
-  response.setHeader('Access-Control-Allow-Origin', '*')
-  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-
-  if (request.method === 'OPTIONS') {
-    response.writeHead(204)
-    response.end()
-    return
-  }
-
-  response.writeHead(200, { 'Content-Type': 'text/plain' })
+// Plain HTTP answers a health check (readable from any origin)
+/** @type {http.RequestListener} */
+const requestHandler = (_request, response) => {
+  response.writeHead(200, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' })
   response.end('okay')
 }
 
@@ -239,25 +203,24 @@ yDocWss.on('connection', setupWSConnection)
 streamWss.on('connection', setupStreamConnection)
 
 // Set up stream heartbeat system (for video streaming)
-const heartbeatInterval = setupStreamHeartbeat(streamWss)
+setupStreamHeartbeat()
 
-// Handle WebSocket upgrades with routing based on path
+// Route WebSocket upgrades: /stream (and /stream/...) is the video relay,
+// every other path is a Yjs room named after it.
 server.on('upgrade', (request, socket, head) => {
-  const pathname = new URL(request.url || '/', 'http://localhost').pathname
-
-  // Route WebSocket connections based on path
-  if (pathname && pathname.startsWith('/stream')) {
-    streamWss.handleUpgrade(request, socket, head, (ws) => {
-      console.log(`${success('Stream WebSocket connection established')}`)
-      streamWss.emit('connection', ws, request)
-    })
-  } else {
-    // Default to Yjs WebSocket connections
-    yDocWss.handleUpgrade(request, socket, head, (ws) => {
-      console.log(`${success('Yjs WebSocket connection established')}`)
-      yDocWss.emit('connection', ws, request)
-    })
+  let pathname
+  try {
+    pathname = new URL(request.url || '/', 'http://localhost').pathname
+  } catch {
+    // a malformed request target (e.g. "http://[") must not throw out of here
+    socket.destroy()
+    return
   }
+
+  const wss = pathname === '/stream' || pathname.startsWith('/stream/') ? streamWss : yDocWss
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request)
+  })
 })
 
 server.listen(port, host, () => {
@@ -319,9 +282,11 @@ server.listen(port, host, () => {
   console.log(`${header('==============================')}\n`)
 })
 
-// Add error handlers
+// A server error is fatal (e.g. the port is in use): exit instead of staying
+// alive without listening.
 server.on('error', (err) => {
   console.error(`${error('Server error:')} ${err}`)
+  process.exit(1)
 })
 
 yDocWss.on('error', (err) => {
@@ -332,13 +297,11 @@ streamWss.on('error', (err) => {
   console.error(`${error('Stream WebSocket server error:')} ${err}`)
 })
 
-// Cleanup on server shutdown
-process.on('SIGINT', () => {
-  console.log(`\n${info('Server shutting down...')}`)
-  cleanup()
-  clearInterval(heartbeatInterval)
-  yDocWss.close()
-  streamWss.close()
-  server.close()
-  process.exit(0)
-})
+// Exit on Ctrl+C and on SIGTERM (docker stop, Heroku). Clients reconnect on
+// their own. As PID 1 in a container, node ignores SIGTERM without a handler.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    console.log(`\n${info(`${signal}: server shutting down...`)}`)
+    process.exit(0)
+  })
+}

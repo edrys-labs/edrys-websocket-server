@@ -12,12 +12,12 @@ import { callbackHandler, isCallbackSet } from './callback.js'
 
 // Simple in-memory persistence using Map (for session persistence)
 class SimpleMemoryPersistence {
-  constructor() {
+  constructor () {
     this.docs = new Map()
-    //console.info('💾 In-memory session persistence enabled')
+    // console.info('💾 In-memory session persistence enabled')
   }
 
-  async getYDoc(docName) {
+  async getYDoc (docName) {
     if (!this.docs.has(docName)) {
       const doc = new Y.Doc()
       this.docs.set(docName, doc)
@@ -26,7 +26,7 @@ class SimpleMemoryPersistence {
     return this.docs.get(docName)
   }
 
-  storeUpdate(docName, update) {
+  storeUpdate (docName, update) {
     // Updates are automatically applied to the doc in memory
     // No additional storage needed for in-memory persistence
   }
@@ -60,7 +60,6 @@ if (typeof persistenceDir === 'string') {
     provider: memoryPersistence,
     bindState: async (docName, ydoc) => {
       const persistedYdoc = await memoryPersistence.getYDoc(docName)
-      const newUpdates = Y.encodeStateAsUpdate(ydoc)
       Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(persistedYdoc))
       ydoc.on('update', update => {
         memoryPersistence.storeUpdate(docName, update)
@@ -74,7 +73,6 @@ if (typeof persistenceDir === 'string') {
     provider: memoryPersistence,
     bindState: async (docName, ydoc) => {
       const persistedYdoc = await memoryPersistence.getYDoc(docName)
-      const newUpdates = Y.encodeStateAsUpdate(ydoc)
       Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(persistedYdoc))
       ydoc.on('update', update => {
         memoryPersistence.storeUpdate(docName, update)

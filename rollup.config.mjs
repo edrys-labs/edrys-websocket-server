@@ -9,8 +9,8 @@ export default [
         format: 'cjs',
         sourcemap: true,
         entryFileNames: '[name].cjs',
-        chunkFileNames: '[name]-[hash].cjs',
-      },
-    ],
-  },
+        chunkFileNames: '[name]-[hash].cjs'
+      }
+    ]
+  }
 ]

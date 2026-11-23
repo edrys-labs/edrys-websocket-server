@@ -8,7 +8,6 @@ import { setupWSConnection } from './utils.js'
 import { setupStreamConnection, setupStreamHeartbeat, cleanup } from './stream-utils.js'
 import { generateSelfSignedCert, loadSSLCertificates, validateSSLCertificates } from './ssl-utils.js'
 import os from 'os'
-import url from 'url'
 
 // ANSI color codes for terminal output
 const colors = {
@@ -36,7 +35,7 @@ const colors = {
   bgBlue: '\x1b[44m',
   bgMagenta: '\x1b[45m',
   bgCyan: '\x1b[46m',
-  bgWhite: '\x1b[47m',
+  bgWhite: '\x1b[47m'
 }
 
 // Helper functions for colored output
@@ -48,11 +47,11 @@ const header = (text) =>
   `${colors.bright}${colors.magenta}${text}${colors.reset}`
 const highlight = (text) =>
   `${colors.bgGreen}${colors.black}${colors.bright}${text}${colors.reset}`
-const url_text = (text) =>
+const urlText = (text) =>
   `${colors.underscore}${colors.green}${text}${colors.reset}`
 
 // Display help information
-function showHelp() {
+function showHelp () {
   console.log('Unified WebSocket Server - For Yjs and Video Streaming')
   console.log('\nUsage:')
   console.log('  node server.js [options]')
@@ -88,7 +87,7 @@ function showHelp() {
 }
 
 // Parse command line arguments
-function parseArgs() {
+function parseArgs () {
   const args = process.argv.slice(2)
   const result = {
     help: false,
@@ -96,7 +95,7 @@ function parseArgs() {
     sslKey: '',
     sslCert: '',
     port: '',
-    host: '',
+    host: ''
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -138,7 +137,7 @@ function parseArgs() {
 }
 
 // New function to get local network information
-function getNetworkInfo() {
+function getNetworkInfo () {
   const interfaces = os.networkInterfaces()
   const addresses = []
 
@@ -152,7 +151,7 @@ function getNetworkInfo() {
         addresses.push({
           interface: interfaceName,
           address: iface.address,
-          netmask: iface.netmask,
+          netmask: iface.netmask
         })
       }
     }
@@ -171,9 +170,9 @@ if (args.help) {
 
 // Create WebSocket servers - one for Yjs docs, one for streaming
 const yDocWss = new WebSocket.Server({ noServer: true })
-const streamWss = new WebSocket.Server({ 
+const streamWss = new WebSocket.Server({
   noServer: true,
-  maxPayload: 5 * 1024 * 1024 // 5MB max message size  
+  maxPayload: 5 * 1024 * 1024 // 5MB max message size
 })
 
 // Priority: command line args > environment variables > defaults
@@ -223,7 +222,7 @@ const requestHandler = (request, response) => {
 }
 
 // Create server (HTTP or HTTPS based on SSL configuration)
-const server = sslOptions 
+const server = sslOptions
   ? https.createServer(sslOptions, requestHandler)
   : http.createServer(requestHandler)
 
@@ -236,8 +235,8 @@ const heartbeatInterval = setupStreamHeartbeat(streamWss)
 
 // Handle WebSocket upgrades with routing based on path
 server.on('upgrade', (request, socket, head) => {
-  const pathname = url.parse(request.url || '').pathname
-  
+  const pathname = new URL(request.url || '/', 'http://localhost').pathname
+
   // Route WebSocket connections based on path
   if (pathname && pathname.startsWith('/stream')) {
     streamWss.handleUpgrade(request, socket, head, (ws) => {
@@ -256,7 +255,7 @@ server.on('upgrade', (request, socket, head) => {
 server.listen(port, host, () => {
   const protocol = sslOptions ? 'https' : 'http'
   const wsProtocol = sslOptions ? 'wss' : 'ws'
-  
+
   console.log(`\n${header('=== Unified WebSocket Server ===')}`)
   console.log(`${info('Server running at:')} ${success(`${protocol}://${host}:${port}`)}`)
   console.log(`${info('SSL/TLS:')} ${sslOptions ? success('Enabled ✅') : warning('Disabled')}`)
@@ -277,13 +276,13 @@ server.listen(port, host, () => {
       )
       console.log(`  ${header('IP Address:')} ${success(info.address)}`)
       console.log(
-        `  ${header('HTTP Server:')} ${url_text(`${protocol}://${info.address}:${port}`)}`
+        `  ${header('HTTP Server:')} ${urlText(`${protocol}://${info.address}:${port}`)}`
       )
       console.log(
-        `  ${header('Yjs WebSocket URL:')} ${url_text(`${wsProtocol}://${info.address}:${port}`)}`
+        `  ${header('Yjs WebSocket URL:')} ${urlText(`${wsProtocol}://${info.address}:${port}`)}`
       )
       console.log(
-        `  ${header('Stream WebSocket URL:')} ${url_text(
+        `  ${header('Stream WebSocket URL:')} ${urlText(
           `${wsProtocol}://${info.address}:${port}/stream`
         )}`
       )
@@ -308,7 +307,7 @@ server.listen(port, host, () => {
     console.log(`${warning('   Browsers will show security warnings')}`)
     console.log(`${warning('   Click "Advanced" → "Proceed to localhost" to accept')}`)
   }
-  
+
   console.log(`${header('==============================')}\n`)
 })
 

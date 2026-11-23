@@ -8,10 +8,8 @@ var number = require('lib0/number');
 var utils = require('./utils.cjs');
 var fs = require('fs');
 var path = require('path');
-require('crypto');
 var child_process = require('child_process');
 var os = require('os');
-var url = require('url');
 require('yjs');
 require('y-protocols/sync');
 require('y-protocols/awareness');
@@ -74,7 +72,7 @@ const setupStreamConnection = (ws, req) => {
       // Binary = media chunk (Buffer); string = JSON control message.
       if (typeof message !== 'string') {
         if (/** @type {any} */ (ws).isSource) handleBinaryFrame(ws, message);
-        return;
+        return
       }
 
       let data;
@@ -82,13 +80,12 @@ const setupStreamConnection = (ws, req) => {
         data = JSON.parse(message);
       } catch (e) {
         console.error('Failed to parse message as JSON:', e);
-        return;
+        return
       }
 
       if (data.type === 'register-source') {
         handleRegisterSource(ws, data);
-      }
-      else if (data.type === 'join-room') {
+      } else if (data.type === 'join-room') {
         handleJoinRoom(ws, data);
       }
     } catch (error) {
@@ -118,14 +115,14 @@ const setupStreamConnection = (ws, req) => {
  * @param {import('ws').WebSocket} ws
  * @param {any} data
  */
-function handleRegisterSource(ws, data) {
+function handleRegisterSource (ws, data) {
   // Require a roomId for registration
   if (!data.roomId) {
     ws.send(JSON.stringify({
       type: 'error',
       message: 'Room ID is required to register as source'
     }));
-    return;
+    return
   }
 
   const roomId = data.roomId;
@@ -149,14 +146,14 @@ function handleRegisterSource(ws, data) {
   console.log(`Stream source registered for room: ${roomId} (${data.mimeType})`);
 
   // Confirm successful registration
-  ws.send(JSON.stringify({ type: 'source-registered', roomId: roomId }));
+  ws.send(JSON.stringify({ type: 'source-registered', roomId }));
 
   // Notify all clients in the same room that a source is available
   clients.forEach((client) => {
     if (client !== ws &&
         client.readyState === 1 &&
-        /** @type {any} */ (client).roomId === roomId) {
-      client.send(JSON.stringify({ type: 'source-available', roomId: roomId, mimeType: data.mimeType }));
+    /** @type {any} */ (client).roomId === roomId) {
+      client.send(JSON.stringify({ type: 'source-available', roomId, mimeType: data.mimeType }));
     }
   });
 }
@@ -166,7 +163,7 @@ function handleRegisterSource(ws, data) {
  * @param {import('ws').WebSocket} ws
  * @param {any} data
  */
-function handleJoinRoom(ws, data) {
+function handleJoinRoom (ws, data) {
   // Client wants to join a specific room
   const roomId = data.roomId;
   if (!roomId) {
@@ -174,7 +171,7 @@ function handleJoinRoom(ws, data) {
       type: 'error',
       message: 'Room ID is required to join a room'
     }));
-    return;
+    return
   }
 
   /** @type {any} */ (ws).roomId = roomId;
@@ -186,12 +183,12 @@ function handleJoinRoom(ws, data) {
     if (source.readyState === 1) {
       ws.send(JSON.stringify({
         type: 'source-available',
-        roomId: roomId,
-        mimeType: /** @type {any} */ (source).mimeType,
+        roomId,
+        mimeType: /** @type {any} */ (source).mimeType
       }));
       // Ask the source to restart its MediaRecorder so the viewer gets a fresh
       // init segment at t=0 with no timeline gap.
-      source.send(JSON.stringify({ type: 'viewer-joined', roomId: roomId }));
+      source.send(JSON.stringify({ type: 'viewer-joined', roomId }));
     } else {
       streamSources.delete(roomId);
     }
@@ -203,17 +200,17 @@ function handleJoinRoom(ws, data) {
  * @param {import('ws').WebSocket} ws
  * @param {any} chunk
  */
-function handleBinaryFrame(ws, chunk) {
+function handleBinaryFrame (ws, chunk) {
   const roomId = /** @type {any} */ (ws).roomId;
-  if (!roomId) return;
+  if (!roomId) return
 
   frameCount++;
 
   clients.forEach((client) => {
     if (client === ws ||
         client.readyState !== 1 ||
-        /** @type {any} */ (client).roomId !== roomId) {
-      return;
+    /** @type {any} */ (client).roomId !== roomId) {
+      return
     }
     try {
       client.send(chunk, { binary: true });
@@ -227,7 +224,7 @@ function handleBinaryFrame(ws, chunk) {
  * Handle client disconnection
  * @param {import('ws').WebSocket} ws
  */
-function handleDisconnect(ws) {
+function handleDisconnect (ws) {
   clients.delete(ws);
   console.log(`[ws] disconnect isSource=${!!(/** @type {any} */ (ws).isSource)} room=${/** @type {any} */ (ws).roomId} → clients=${clients.size} sources=${streamSources.size}`);
 
@@ -243,7 +240,7 @@ function handleDisconnect(ws) {
       if (client.readyState === 1 && /** @type {any} */ (client).roomId === roomId) {
         client.send(JSON.stringify({
           type: 'source-disconnected',
-          roomId: roomId
+          roomId
         }));
       }
     });
@@ -259,7 +256,7 @@ const setupStreamHeartbeat = (wss) => {
     clients.forEach((ws) => {
       if (ws.isAlive === false) {
         handleDisconnect(ws);
-        return ws.terminate();
+        return ws.terminate()
       }
 
       ws.isAlive = false;
@@ -268,13 +265,13 @@ const setupStreamHeartbeat = (wss) => {
         ws.ping();
       } catch (e) {
         // Client might be dead
-        console.error("Failed to ping stream client", e);
+        console.error('Failed to ping stream client', e);
         handleDisconnect(ws);
       }
     });
   }, 5000);
 
-  return pingInterval;
+  return pingInterval
 };
 
 /**
@@ -291,7 +288,7 @@ const cleanup = () => {
  * @param {string} certDir - Directory to store certificates
  * @returns {Object} - Object containing key and cert paths
  */
-function generateSelfSignedCert(certDir = './certs') {
+function generateSelfSignedCert (certDir = './certs') {
   if (!fs.existsSync(certDir)) {
     fs.mkdirSync(certDir, { recursive: true });
   }
@@ -311,8 +308,6 @@ function generateSelfSignedCert(certDir = './certs') {
     // Try to use OpenSSL if available
     createWithOpenSSL(keyPath, certPath);
   } catch (error) {
-    //console.log('⚠️  OpenSSL not available, using Node.js crypto...')
-    //createWithNodeCrypto(keyPath, certPath)
     console.log('❌ Cannot generate SSL certificates without OpenSSL');
     console.log('');
     console.log('🔧 Solutions:');
@@ -328,7 +323,7 @@ function generateSelfSignedCert(certDir = './certs') {
     console.log('   3. Run without --ssl flag to use HTTP instead:');
     console.log('      • Example: ./edrys-server --port 3210');
     console.log('');
-    
+
     throw new Error('SSL certificate generation requires OpenSSL. Please install OpenSSL or provide existing certificates.')
   }
 
@@ -342,7 +337,7 @@ function generateSelfSignedCert(certDir = './certs') {
 /**
  * Create certificates using OpenSSL
  */
-function createWithOpenSSL(keyPath, certPath) {
+function createWithOpenSSL (keyPath, certPath) {
   // Create a more comprehensive certificate with SAN fields for better browser compatibility
   const opensslCmd = `openssl req -nodes -new -x509 -keyout "${keyPath}" -out "${certPath}" -days 365 -subj "/C=US/ST=Local/L=Local/O=Edrys/OU=WebSocket/CN=localhost" -addext "subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1,IP:0.0.0.0"`;
   child_process.execSync(opensslCmd, { stdio: 'pipe' });
@@ -354,7 +349,7 @@ function createWithOpenSSL(keyPath, certPath) {
  * @param {string} certPath - Path to certificate file
  * @returns {Object} - Object containing key and cert content
  */
-function loadSSLCertificates(keyPath, certPath) {
+function loadSSLCertificates (keyPath, certPath) {
   try {
     const key = fs.readFileSync(keyPath, 'utf8');
     const cert = fs.readFileSync(certPath, 'utf8');
@@ -371,7 +366,7 @@ function loadSSLCertificates(keyPath, certPath) {
  * @param {string} certPath - Path to certificate file
  * @returns {boolean} - True if certificates exist and are readable
  */
-function validateSSLCertificates(keyPath, certPath) {
+function validateSSLCertificates (keyPath, certPath) {
   try {
     fs.accessSync(keyPath, fs.constants.R_OK);
     fs.accessSync(certPath, fs.constants.R_OK);
@@ -403,11 +398,11 @@ const header = (text) =>
   `${colors.bright}${colors.magenta}${text}${colors.reset}`;
 const highlight = (text) =>
   `${colors.bgGreen}${colors.black}${colors.bright}${text}${colors.reset}`;
-const url_text = (text) =>
+const urlText = (text) =>
   `${colors.underscore}${colors.green}${text}${colors.reset}`;
 
 // Display help information
-function showHelp() {
+function showHelp () {
   console.log('Unified WebSocket Server - For Yjs and Video Streaming');
   console.log('\nUsage:');
   console.log('  node server.js [options]');
@@ -443,7 +438,7 @@ function showHelp() {
 }
 
 // Parse command line arguments
-function parseArgs() {
+function parseArgs () {
   const args = process.argv.slice(2);
   const result = {
     help: false,
@@ -451,7 +446,7 @@ function parseArgs() {
     sslKey: '',
     sslCert: '',
     port: '',
-    host: '',
+    host: ''
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -493,7 +488,7 @@ function parseArgs() {
 }
 
 // New function to get local network information
-function getNetworkInfo() {
+function getNetworkInfo () {
   const interfaces = os.networkInterfaces();
   const addresses = [];
 
@@ -507,7 +502,7 @@ function getNetworkInfo() {
         addresses.push({
           interface: interfaceName,
           address: iface.address,
-          netmask: iface.netmask,
+          netmask: iface.netmask
         });
       }
     }
@@ -526,9 +521,9 @@ if (args.help) {
 
 // Create WebSocket servers - one for Yjs docs, one for streaming
 const yDocWss = new WebSocket.Server({ noServer: true });
-const streamWss = new WebSocket.Server({ 
+const streamWss = new WebSocket.Server({
   noServer: true,
-  maxPayload: 5 * 1024 * 1024 // 5MB max message size  
+  maxPayload: 5 * 1024 * 1024 // 5MB max message size
 });
 
 // Priority: command line args > environment variables > defaults
@@ -578,7 +573,7 @@ const requestHandler = (request, response) => {
 };
 
 // Create server (HTTP or HTTPS based on SSL configuration)
-const server = sslOptions 
+const server = sslOptions
   ? https.createServer(sslOptions, requestHandler)
   : http.createServer(requestHandler);
 
@@ -591,8 +586,8 @@ const heartbeatInterval = setupStreamHeartbeat();
 
 // Handle WebSocket upgrades with routing based on path
 server.on('upgrade', (request, socket, head) => {
-  const pathname = url.parse(request.url || '').pathname;
-  
+  const pathname = new URL(request.url || '/', 'http://localhost').pathname;
+
   // Route WebSocket connections based on path
   if (pathname && pathname.startsWith('/stream')) {
     streamWss.handleUpgrade(request, socket, head, (ws) => {
@@ -611,7 +606,7 @@ server.on('upgrade', (request, socket, head) => {
 server.listen(port, host, () => {
   const protocol = sslOptions ? 'https' : 'http';
   const wsProtocol = sslOptions ? 'wss' : 'ws';
-  
+
   console.log(`\n${header('=== Unified WebSocket Server ===')}`);
   console.log(`${info('Server running at:')} ${success(`${protocol}://${host}:${port}`)}`);
   console.log(`${info('SSL/TLS:')} ${sslOptions ? success('Enabled ✅') : warning('Disabled')}`);
@@ -632,13 +627,13 @@ server.listen(port, host, () => {
       );
       console.log(`  ${header('IP Address:')} ${success(info.address)}`);
       console.log(
-        `  ${header('HTTP Server:')} ${url_text(`${protocol}://${info.address}:${port}`)}`
+        `  ${header('HTTP Server:')} ${urlText(`${protocol}://${info.address}:${port}`)}`
       );
       console.log(
-        `  ${header('Yjs WebSocket URL:')} ${url_text(`${wsProtocol}://${info.address}:${port}`)}`
+        `  ${header('Yjs WebSocket URL:')} ${urlText(`${wsProtocol}://${info.address}:${port}`)}`
       );
       console.log(
-        `  ${header('Stream WebSocket URL:')} ${url_text(
+        `  ${header('Stream WebSocket URL:')} ${urlText(
           `${wsProtocol}://${info.address}:${port}/stream`
         )}`
       );
@@ -663,7 +658,7 @@ server.listen(port, host, () => {
     console.log(`${warning('   Browsers will show security warnings')}`);
     console.log(`${warning('   Click "Advanced" → "Proceed to localhost" to accept')}`);
   }
-  
+
   console.log(`${header('==============================')}\n`);
 });
 

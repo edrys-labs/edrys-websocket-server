@@ -68,41 +68,40 @@ wsProvider.on('status', event => {
 // Connect to the streaming endpoint
 const ws = new WebSocket('ws://localhost:1234/stream')
 
-// For stream source (sender)
+// For stream source (sender): the room id is the SHA-256 of a secret key,
+// and only the room id is given to viewers
+const hex = (bytes) => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+const sourceKey = hex(crypto.getRandomValues(new Uint8Array(32)))
+const roomId = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sourceKey))))
+
 ws.onopen = () => {
-  // Register as a video source for a specific room
+  // Register as the video source of this room
   ws.send(JSON.stringify({
     type: 'register-source',
-    roomId: 'my-room-id'
+    roomId,
+    sourceKey,
+    mimeType: 'video/webm;codecs="vp8"'
   }))
-  
-  // Send video frames (example)
-  function sendFrame(frameData) {
-    ws.send(JSON.stringify({
-      type: 'frame',
-      data: frameData
-    }))
-  }
+
+  // Then send MediaRecorder chunks as binary messages
+  recorder.ondataavailable = (e) => ws.send(e.data)
 }
 
 // For stream viewer (receiver)
 ws.onopen = () => {
-  // Join a specific room to receive video
+  // Join the room the source handed out
   ws.send(JSON.stringify({
     type: 'join-room',
-    roomId: 'my-room-id'
+    roomId
   }))
 }
 
-// Handle incoming messages
+// Handle incoming messages: JSON control messages, binary media chunks
 ws.onmessage = (event) => {
-  const data = JSON.parse(event.data)
-  
-  if (data.type === 'source-available') {
+  if (typeof event.data !== 'string') {
+    appendToSourceBuffer(event.data)
+  } else if (JSON.parse(event.data).type === 'source-available') {
     console.log('A video source is available in this room')
-  } else if (data.type === 'frame') {
-    // Handle incoming video frame
-    displayFrame(data.data)
   }
 }
 ```
@@ -115,13 +114,18 @@ sent as binary WebSocket messages; control messages are JSON text frames:
 
 ### Message Types:
 
-1. **Register as a stream source** (station → server). Registration is
-   last-writer-wins: a re-registration for the same room replaces the previous
-   source and terminates its socket.
+1. **Register as a stream source** (station → server). Viewers know the room
+   id, so the source proves itself with a secret `sourceKey`: `roomId` must be
+   the lowercase hex SHA-256 of `sourceKey`, otherwise the server answers
+   `{ "type": "error", "message": "sourceKey does not match the room ID" }`.
+   Only the room id is handed to viewers. Among holders of the key,
+   registration is last-writer-wins: a re-registration for the same room (a
+   reconnecting station) replaces the previous source and terminates its socket.
    ```json
    {
      "type": "register-source",
-     "roomId": "unique-room-identifier",
+     "roomId": "<hex sha256 of sourceKey>",
+     "sourceKey": "<random secret, e.g. 32 bytes hex>",
      "streamName": "Camera 1",
      "mimeType": "video/webm;codecs=\"vp8,opus\""
    }

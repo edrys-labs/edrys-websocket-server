@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { startServer, connect } from './helpers.js'
+import { startServer, connect, keyed } from './helpers.js'
 import { MSG_SYNC } from './protocol.js'
 
 /** @type {Awaited<ReturnType<typeof startServer>>} */
@@ -34,7 +34,7 @@ for (const [name, type] of [['pubsub', 2], ['targeted pubsub', 4], ['unknown', 7
 
 test('/stream goes to the stream relay', async () => {
   const s = await connect(server.url('/stream'))
-  s.sendJSON({ type: 'register-source', roomId: 'routing' })
+  s.sendJSON({ type: 'register-source', ...keyed('routing') })
   assert.equal((await s.nextJSON()).type, 'source-registered')
   await s.expectNone(isSync)
   await s.close()

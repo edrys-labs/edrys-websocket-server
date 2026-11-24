@@ -3,6 +3,7 @@
 // WebSockets.
 
 import { spawn } from 'child_process'
+import { createHash } from 'crypto'
 import http from 'http'
 import https from 'https'
 import net from 'net'
@@ -197,3 +198,16 @@ export function connect (url) {
 }
 
 export { sleep }
+
+/**
+ * A stream relay room for `name`: the server only takes a source whose
+ * roomId is the SHA-256 of its sourceKey.
+ * @param {string} name
+ */
+export function keyed (name) {
+  const sourceKey = `key-${name}`
+  return { roomId: createHash('sha256').update(sourceKey).digest('hex'), sourceKey }
+}
+
+/** The roomId viewers join for `name`. @param {string} name */
+export const room = (name) => keyed(name).roomId

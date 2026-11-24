@@ -1,10 +1,15 @@
 // Video relay on /stream: a source (the station) registers for a room and
 // sends MediaRecorder chunks; viewers join the room and get them verbatim.
 //
-//   source → { type: 'register-source', roomId, mimeType }  ← source-registered
-//   viewer → { type: 'join-room', roomId }                   ← source-available
+//   source → { type: 'register-source', roomId, sourceKey, mimeType }  ← source-registered
+//   viewer → { type: 'join-room', roomId }                              ← source-available
 //   server → source { type: 'viewer-joined' }   (restart: fresh init segment)
 //   server → viewers { type: 'source-disconnected' }
+//
+// roomId must be the hex SHA-256 of sourceKey: viewers know the room id, only
+// the source knows the key.
+
+import { createHash, timingSafeEqual } from 'crypto'
 
 /** @type {Set<any>} every connected stream socket */
 const clients = new Set()
@@ -110,6 +115,13 @@ function handleRegisterSource (ws, data) {
   }
   const roomId = data.roomId
 
+  // Viewers know the room id, so it can't prove who the source is: the
+  // source proves it with the key the room id is the SHA-256 of.
+  if (!isRoomKey(roomId, data.sourceKey)) {
+    sendJSON(ws, { type: 'error', message: 'sourceKey does not match the room ID' })
+    return
+  }
+
   // Moving to another room: the old room no longer has this source.
   if (ws.roomId !== roomId) releaseSource(ws)
 
@@ -133,6 +145,19 @@ function handleRegisterSource (ws, data) {
 
   sendJSON(ws, { type: 'source-registered', roomId })
   toRoom(roomId, { type: 'source-available', roomId, mimeType: data.mimeType }, ws)
+}
+
+/**
+ * Whether `roomId` is the hex SHA-256 of `sourceKey`.
+ * @param {unknown} roomId
+ * @param {unknown} sourceKey
+ */
+export function isRoomKey (roomId, sourceKey) {
+  if (typeof roomId !== 'string' || typeof sourceKey !== 'string') return false
+  // Buffer.from(…, 'hex') stops at the first non-hex character: check the form first.
+  if (!/^[0-9a-f]{64}$/.test(roomId)) return false
+  const expected = createHash('sha256').update(sourceKey).digest()
+  return timingSafeEqual(Buffer.from(roomId, 'hex'), expected)
 }
 
 /**

@@ -8,7 +8,7 @@ import fs from 'fs'
 import net from 'net'
 import os from 'os'
 import path from 'path'
-import { startServer, connect, get, serverCommand } from './helpers.js'
+import { startServer, connect, get, serverCommand, keyed, room } from './helpers.js'
 import { MSG_SYNC } from './protocol.js'
 
 /** @type {Awaited<ReturnType<typeof startServer>>} */
@@ -48,7 +48,7 @@ async function runToExit (args, ms = 3000) {
 for (const p of ['/stream', '/stream/', '/stream?x=1']) {
   test(`${p} goes to the stream relay`, async () => {
     const s = await connect(server.url(p))
-    s.sendJSON({ type: 'register-source', roomId: `route${p}` })
+    s.sendJSON({ type: 'register-source', ...keyed(`route${p}`) })
     assert.equal((await s.nextJSON()).type, 'source-registered')
     await s.close()
   })
@@ -100,19 +100,19 @@ test('NO_COLOR turns off ANSI colors', async () => {
 
 test('a source that re-registers in another room releases the old one', async () => {
   const s = await connect(server.url('/stream'))
-  s.sendJSON({ type: 'register-source', roomId: 'move-a' })
+  s.sendJSON({ type: 'register-source', ...keyed('move-a') })
   await s.nextJSON('source-registered')
   const va = await connect(server.url('/stream'))
-  va.sendJSON({ type: 'join-room', roomId: 'move-a' })
+  va.sendJSON({ type: 'join-room', roomId: room('move-a') })
   await va.nextJSON('source-available')
 
-  s.sendJSON({ type: 'register-source', roomId: 'move-b' })
+  s.sendJSON({ type: 'register-source', ...keyed('move-b') })
   await s.nextJSON('source-registered')
-  assert.deepEqual(await va.nextJSON('source-disconnected'), { type: 'source-disconnected', roomId: 'move-a' })
+  assert.deepEqual(await va.nextJSON('source-disconnected'), { type: 'source-disconnected', roomId: room('move-a') })
 
   // a new viewer of the old room finds no source
   const va2 = await connect(server.url('/stream'))
-  va2.sendJSON({ type: 'join-room', roomId: 'move-a' })
+  va2.sendJSON({ type: 'join-room', roomId: room('move-a') })
   await va2.expectNone(m => typeof m === 'string' && JSON.parse(m).type === 'source-available')
 
   await Promise.all([s, va, va2].map(x => x.close()))

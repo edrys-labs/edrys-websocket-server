@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { startServer, connect } from './helpers.js'
+import { startServer, connect, keyed, room } from './helpers.js'
 
 /** @type {Awaited<ReturnType<typeof startServer>>} */
 let server
@@ -11,20 +11,20 @@ const stream = () => connect(server.url('/stream'))
 const isBinary = (/** @type {any} */ m) => typeof m !== 'string'
 
 /**
- * @param {string} roomId
+ * @param {string} name
  * @param {string} [mimeType]
  */
-async function source (roomId, mimeType = 'video/webm') {
+async function source (name, mimeType = 'video/webm') {
   const s = await stream()
-  s.sendJSON({ type: 'register-source', roomId, mimeType })
-  assert.deepEqual(await s.nextJSON('source-registered'), { type: 'source-registered', roomId })
+  s.sendJSON({ type: 'register-source', ...keyed(name), mimeType })
+  assert.deepEqual(await s.nextJSON('source-registered'), { type: 'source-registered', roomId: room(name) })
   return s
 }
 
-/** @param {string} roomId */
-async function viewer (roomId) {
+/** @param {string} name */
+async function viewer (name) {
   const v = await stream()
-  v.sendJSON({ type: 'join-room', roomId })
+  v.sendJSON({ type: 'join-room', roomId: room(name) })
   return v
 }
 
@@ -37,11 +37,33 @@ test('register-source and join-room need a roomId', async () => {
   await s.close()
 })
 
+test('register-source needs the key the room id is the SHA-256 of', async () => {
+  const s = await source('keyed')
+  const v = await viewer('keyed')
+  await v.nextJSON('source-available')
+
+  // what a viewer knows (the room id), with no key, a wrong one, or the
+  // right one but the room id padded or in another case
+  const attacker = await stream()
+  const { roomId, sourceKey } = keyed('keyed')
+  for (const attempt of [{ roomId }, { roomId, sourceKey: 'guess' }, { roomId: roomId + 'zz', sourceKey }, { roomId: roomId.toUpperCase(), sourceKey }]) {
+    attacker.sendJSON({ type: 'register-source', ...attempt, mimeType: 'video/mp4' })
+    assert.equal((await attacker.nextJSON('error')).message, 'sourceKey does not match the room ID')
+  }
+  attacker.send(Buffer.from([6, 6, 6]))
+  await v.expectNone(m => typeof m !== 'string' || JSON.parse(m).type === 'source-available')
+
+  // the source is still there
+  s.send(Buffer.from([1, 2]))
+  assert.deepEqual(await v.next(isBinary), new Uint8Array([1, 2]))
+  await Promise.all([s, v, attacker].map(x => x.close()))
+})
+
 test('a viewer joining a room with a source gets source-available, the source gets viewer-joined', async () => {
   const s = await source('join', 'video/webm;codecs=vp8')
   const v = await viewer('join')
-  assert.deepEqual(await v.nextJSON('source-available'), { type: 'source-available', roomId: 'join', mimeType: 'video/webm;codecs=vp8' })
-  assert.deepEqual(await s.nextJSON('viewer-joined'), { type: 'viewer-joined', roomId: 'join' })
+  assert.deepEqual(await v.nextJSON('source-available'), { type: 'source-available', roomId: room('join'), mimeType: 'video/webm;codecs=vp8' })
+  assert.deepEqual(await s.nextJSON('viewer-joined'), { type: 'viewer-joined', roomId: room('join') })
   await s.close()
   await v.close()
 })
@@ -105,6 +127,6 @@ test('a source leaving sends source-disconnected to its room', async () => {
   const v = await viewer('leave')
   await v.nextJSON('source-available')
   await s.close()
-  assert.deepEqual(await v.nextJSON('source-disconnected'), { type: 'source-disconnected', roomId: 'leave' })
+  assert.deepEqual(await v.nextJSON('source-disconnected'), { type: 'source-disconnected', roomId: room('leave') })
   await v.close()
 })

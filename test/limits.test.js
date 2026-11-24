@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { startServer, connect, sleep } from './helpers.js'
+import { startServer, connect, sleep, keyed, room } from './helpers.js'
 
 const YJS_MAX = 64 * 1024
 
@@ -52,7 +52,7 @@ for (const path of ['/malformed', '/stream']) {
 
 test('a stream frame over 5 MiB closes the connection', async () => {
   const s = await connect(server.url('/stream'))
-  s.sendJSON({ type: 'register-source', roomId: 'limit' })
+  s.sendJSON({ type: 'register-source', ...keyed('limit') })
   await s.nextJSON('source-registered')
   const closed = closeCode(s)
   s.send(Buffer.alloc(5 * 1024 * 1024 + 1))
@@ -61,14 +61,14 @@ test('a stream frame over 5 MiB closes the connection', async () => {
 
 test('viewer-joined is coalesced per room: one at once, one trailing', async () => {
   const s = await connect(server.url('/stream'))
-  s.sendJSON({ type: 'register-source', roomId: 'burst' })
+  s.sendJSON({ type: 'register-source', ...keyed('burst') })
   await s.nextJSON('source-registered')
   const isJoined = (/** @type {any} */ m) => typeof m === 'string' && JSON.parse(m).type === 'viewer-joined'
 
   const viewers = []
   const join = async () => {
     const v = await connect(server.url('/stream'))
-    v.sendJSON({ type: 'join-room', roomId: 'burst' })
+    v.sendJSON({ type: 'join-room', roomId: room('burst') })
     viewers.push(v)
     await v.nextJSON('source-available')
   }
@@ -91,12 +91,12 @@ test('viewer-joined is coalesced per room: one at once, one trailing', async () 
 
 test('a viewer that does not keep up is dropped, the others get every chunk', async () => {
   const s = await connect(server.url('/stream'))
-  s.sendJSON({ type: 'register-source', roomId: 'slow' })
+  s.sendJSON({ type: 'register-source', ...keyed('slow') })
   await s.nextJSON('source-registered')
   const fast = await connect(server.url('/stream'))
   const slow = await connect(server.url('/stream'))
   for (const v of [fast, slow]) {
-    v.sendJSON({ type: 'join-room', roomId: 'slow' })
+    v.sendJSON({ type: 'join-room', roomId: room('slow') })
     await v.nextJSON('source-available')
   }
 
